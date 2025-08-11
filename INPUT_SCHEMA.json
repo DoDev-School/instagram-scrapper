@@ -6,9 +6,8 @@
     "usernames": {
       "title": "Usernames",
       "type": "array",
-      "description": "Lista de @usernames sem o @",
-      "items": { "type": "string" },
-      "editor": "array"
+      "description": "Lista de usernames (sem @), um por linha.",
+      "items": { "type": "string" }
     },
     "postsLimit": {
       "title": "Quantos posts recentes avaliar",
@@ -35,7 +34,7 @@
         "apifyProxyGroups": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Ex.: SHADER, RESIDENTIAL"
+          "description": "Ex.: RESIDENTIAL"
         }
       }
     }
