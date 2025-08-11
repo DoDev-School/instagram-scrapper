@@ -59,7 +59,7 @@ async function igFetchPosts(username, userId, wanted = 24, cookieHeader) {
     endCursor = pageInfo?.end_cursor;
 
     // Respiro para não tomar rate limit
-    await Actor.sleep(1200);
+    await new Promise(res => setTimeout(res, 1200));
   }
 
   return edges.slice(0, wanted);
