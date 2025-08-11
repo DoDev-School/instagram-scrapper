@@ -14,7 +14,7 @@
       "title": "Quantidade de posts para analisar",
       "type": "integer",
       "description": "Número de posts recentes a coletar por perfil (6–100). Use 24 para um retrato confiável.",
-      "default": 24,
+      "prefill": 24,
       "minimum": 6,
       "maximum": 100,
       "editor": "number"
@@ -23,7 +23,7 @@
       "title": "Usar cookies de login",
       "type": "boolean",
       "description": "Ative se quiser raspar usando uma sessão logada (pode reduzir rate-limit e mostrar dados extras).",
-      "default": false,
+      "prefill": false,
       "editor": "checkbox"
     },
     "cookies": {
@@ -36,13 +36,14 @@
       "title": "Configuração de Proxy",
       "type": "object",
       "description": "Defina o uso do Apify Proxy e, opcionalmente, grupos (ex.: RESIDENTIAL).",
+      "editor": "fieldset",
       "properties": {
-        "useApifyProxy": { 
+        "useApifyProxy": {
           "title": "Usar Apify Proxy",
-          "type": "boolean", 
+          "type": "boolean",
           "description": "Recomendado para estabilidade e evitar bloqueios.",
-          "default": true, 
-          "editor": "checkbox" 
+          "prefill": true,
+          "editor": "checkbox"
         },
         "apifyProxyGroups": {
           "title": "Grupos do Apify Proxy",
