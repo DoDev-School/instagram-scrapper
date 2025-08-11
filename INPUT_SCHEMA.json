@@ -7,34 +7,43 @@
       "title": "Usernames",
       "type": "array",
       "description": "Lista de usernames (sem @), um por linha.",
-      "items": { "type": "string" }
+      "items": { "type": "string" },
+      "editor": "stringList"
     },
     "postsLimit": {
       "title": "Quantos posts recentes avaliar",
       "type": "integer",
       "default": 24,
       "minimum": 6,
-      "maximum": 100
+      "maximum": 100,
+      "editor": "number"
     },
     "useLoginCookies": {
       "title": "Usar cookies de login (opcional)",
       "type": "boolean",
-      "default": false
+      "default": false,
+      "editor": "checkbox"
     },
     "cookies": {
       "title": "Cookies (JSON) se for logado",
       "type": "string",
-      "description": "Ex.: [{\"name\":\"sessionid\",\"value\":\"...\",\"domain\":\".instagram.com\"}]"
+      "description": "Ex.: [{\"name\":\"sessionid\",\"value\":\"...\",\"domain\":\".instagram.com\"}]",
+      "editor": "textarea"
     },
     "proxy": {
       "title": "Proxy",
       "type": "object",
       "properties": {
-        "useApifyProxy": { "type": "boolean", "default": true },
+        "useApifyProxy": { 
+          "type": "boolean", 
+          "default": true, 
+          "editor": "checkbox" 
+        },
         "apifyProxyGroups": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Ex.: RESIDENTIAL"
+          "description": "Ex.: RESIDENTIAL",
+          "editor": "stringList"
         }
       }
     }
