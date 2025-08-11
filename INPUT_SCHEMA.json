@@ -8,7 +8,8 @@
       "type": "array",
       "description": "Lista de usernames do Instagram (sem @). Adicione um por linha.",
       "items": { "type": "string" },
-      "editor": "stringList"
+      "editor": "stringList",
+      "prefill": ["exemplo_user1", "exemplo_user2"]
     },
     "postsLimit": {
       "title": "Quantidade de posts para analisar",
@@ -42,7 +43,6 @@
           "title": "Usar Apify Proxy",
           "type": "boolean",
           "description": "Recomendado para estabilidade e evitar bloqueios.",
-          "prefill": true,
           "editor": "checkbox"
         },
         "apifyProxyGroups": {
