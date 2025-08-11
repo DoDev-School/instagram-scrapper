@@ -18,33 +18,51 @@ async function igFetchProfile(username, cookieHeader) {
   return res?.data?.user; // objeto do perfil
 }
 
-async function igFetchPostsShortcode(profileId, count = 24, cookieHeader) {
-  // pega posts via página pública com JSON embutido em “__additionalData” (fallback via GraphQL é mais frágil)
-  // estratégia: usar endpoint web “highlights” (alternativa) – aqui vamos simplesmente puxar do próprio web_profile_info edges
-  // Observação: web_profile_info já retorna primeiros 12 nós. Para mais, precisaríamos de paginação GraphQL.
-  // Para simplificar, coletamos até 24 via paginação leve se disponível.
-
-  const first = Math.min(24, count);
-  const variables = {
-    id: profileId,
-    first,
-  };
-
-  const url = 'https://www.instagram.com/graphql/query/';
-  const params = new URLSearchParams({
-    query_hash: '003056d32c2554def87228bc3fd9668a', // user media
-    variables: JSON.stringify(variables),
-  });
-
+async function igFetchPosts(username, userId, wanted = 24, cookieHeader) {
   const headers = {
     'User-Agent': 'Mozilla/5.0',
-    'Accept': '*/*',
+    'X-IG-App-ID': IG_APP_ID,
+    'Accept': 'application/json',
+    'Referer': `https://www.instagram.com/${username}/`
   };
-  if (cookieHeader) headers['Cookie'] = cookieHeader;
+  if (cookieHeader) headers.Cookie = cookieHeader;
 
-  const resp = await got(`${url}?${params.toString()}`, { headers }).json();
-  const edges = resp?.data?.user?.edge_owner_to_timeline_media?.edges ?? [];
-  return edges.map(e => e.node);
+  // 1) primeira página via web_profile_info (confiável sem login)
+  const first = await got(
+    `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
+    { headers, http2: true }
+  ).json();
+
+  const user = first?.data?.user;
+  const media = user?.edge_owner_to_timeline_media;
+  let edges = media?.edges?.map(e => e.node) ?? [];
+  let endCursor = media?.page_info?.end_cursor;
+  let hasNext = media?.page_info?.has_next_page;
+
+  // 2) pagina se precisar de mais (usa doc_id estável)
+  while (edges.length < wanted && hasNext && endCursor) {
+    const variables = { id: userId, first: 12, after: endCursor };
+
+    // doc_id “UserMedia”
+    const url = 'https://www.instagram.com/graphql/query/?' +
+      new URLSearchParams({
+        doc_id: '17888483320059182',
+        variables: JSON.stringify(variables),
+      }).toString();
+
+    const resp = await got(url, { headers }).json();
+    const pageEdges = resp?.data?.user?.edge_owner_to_timeline_media?.edges ?? [];
+    edges.push(...pageEdges.map(e => e.node));
+
+    const pageInfo = resp?.data?.user?.edge_owner_to_timeline_media?.page_info;
+    hasNext = pageInfo?.has_next_page;
+    endCursor = pageInfo?.end_cursor;
+
+    // Respiro para não tomar rate limit
+    await Actor.sleep(1200);
+  }
+
+  return edges.slice(0, wanted);
 }
 
 function statsFromPosts(nodes, followers) {
@@ -115,7 +133,7 @@ Actor.main(async () => {
       const followers = profile.edge_followed_by?.count ?? 0;
       const following = profile.edge_follow?.count ?? 0;
 
-      const nodes = await igFetchPostsShortcode(profile.id, postsLimit, cookieHeader);
+      const nodes = await igFetchPosts(username, profile.id, postsLimit, cookieHeader);
       const { posts, engagementRate, medianViews } = statsFromPosts(nodes, followers);
 
       const item = {
