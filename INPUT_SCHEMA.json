@@ -36,24 +36,10 @@
     "proxy": {
       "title": "Configuração de Proxy",
       "type": "object",
-      "description": "Defina o uso do Apify Proxy e, opcionalmente, grupos (ex.: RESIDENTIAL).",
-      "editor": "fieldset",
-      "properties": {
-        "useApifyProxy": {
-          "title": "Usar Apify Proxy",
-          "type": "boolean",
-          "description": "Recomendado para estabilidade e evitar bloqueios.",
-          "editor": "checkbox"
-        },
-        "apifyProxyGroups": {
-          "title": "Grupos do Apify Proxy",
-          "type": "array",
-          "description": "Ex.: [\"RESIDENTIAL\"]. Deixe vazio para padrão.",
-          "items": { "type": "string" },
-          "editor": "stringList"
-        }
-      }
+      "description": "Use o Apify Proxy ou configure um proxy próprio.",
+      "editor": "proxy"
     }
   },
   "required": ["usernames"]
 }
+
