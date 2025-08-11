@@ -1,0 +1,6 @@
+{
+  "name": "instagram-profile-tracker",
+  "version": "0.1",
+  "buildTag": "latest",
+  "env": { "NODE_VERSION": "18" }
+}
