@@ -2,9 +2,10 @@ import { Actor } from 'apify';
 import got from 'got';
 import pLimit from 'p-limit';
 
-const IG_APP_ID = '936619743392459'; // público do web app do IG (pode mudar)
+const IG_APP_ID = '936619743392459';
 
 // ---------- helpers ----------
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 function median(arr) {
   if (!arr.length) return 0;
@@ -18,6 +19,39 @@ function stddev(arr){
   const m = mean(arr);
   const v = mean(arr.map(x => (x-m)**2));
   return Math.sqrt(v);
+}
+function buildHeaders(username, appId, cookieHeader = '', csrf = '') {
+  const h = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Origin': 'https://www.instagram.com',
+    'Referer': `https://www.instagram.com/${username}/`,
+    'X-IG-App-ID': appId,
+    'X-Requested-With': 'XMLHttpRequest',
+  };
+  if (cookieHeader) h['Cookie'] = cookieHeader;
+  if (csrf) h['X-CSRFToken'] = csrf;
+  return h;
+}
+function parseCsrftokenFromCookieHeader(cookieHeader='') {
+  const m = cookieHeader.match(/(^|;\s*)csrftoken=([^;]+)/i);
+  return m ? m[2] : '';
+}
+async function gotJsonWithRetry(url, options={}, maxRetries=3) {
+  let attempt = 0;
+  let wait = 1200;
+  while (true) {
+    try {
+      return await got(url, { http2: true, throwHttpErrors: true, ...options }).json();
+    } catch (err) {
+      const status = err?.response?.statusCode || err?.code;
+      attempt++;
+      if (attempt > maxRetries || ![401,403,429].includes(status)) throw err;
+      await sleep(wait);
+      wait = Math.min(wait * 2, 8000);
+    }
+  }
 }
 function extractEmailFromProfile(profile) {
   const direct = profile?.business_email || profile?.public_email || null;
@@ -36,83 +70,63 @@ function guessGender(profile, username='') {
   const cat = (profile?.category_name || '').toLowerCase();
   const uname = (username || '').toLowerCase();
 
-  // sinais fortes por pronome PT/EN
   const femPron = /(ela\/dela|she\/her|mulher|blogueira|modelo feminina|moda feminina|womenswear|feminina)/i.test(bio) || /(womenswear|feminina)/i.test(cat);
   const mascPron = /(ele\/dele|he\/him|homem|blogueiro|modelo masculino|moda masculina|menswear|masculina)/i.test(bio) || /(menswear|masculina)/i.test(cat);
 
   if (femPron && !mascPron) return 'feminino';
   if (mascPron && !femPron) return 'masculino';
-
-  // alguns hints comuns em moda no username
-  if (/dicasdela|garotas|girls|mulher|feminina/.test(uname)) return 'feminino';
-  if (/doiseles|garotos|boys|masculina|mens/.test(uname)) return 'masculino';
-
+  if (/girls|garotas|feminina|dela/.test(uname)) return 'feminino';
+  if (/boys|garotos|masculina|dele|mens/.test(uname)) return 'masculino';
   return 'desconhecido';
 }
 
-// ---------- instagram fetchers ----------
+// ---------- fetchers ----------
 async function igFetchProfile(username, cookieHeader) {
+  const csrf = parseCsrftokenFromCookieHeader(cookieHeader);
+  const headers = buildHeaders(username, IG_APP_ID, cookieHeader, csrf);
   const url = `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari',
-    'X-IG-App-ID': IG_APP_ID,
-    'Accept': 'application/json',
-    'Referer': `https://www.instagram.com/${username}/`
-  };
-  if (cookieHeader) headers['Cookie'] = cookieHeader;
-
-  const res = await got(url, { headers, http2: true }).json();
-  return res?.data?.user; // objeto do perfil
+  const res = await gotJsonWithRetry(url, { headers }, 3);
+  return res?.data?.user;
 }
 
 async function igFetchPosts(username, userId, wanted = 24, cookieHeader) {
-  const headers = {
-    'User-Agent': 'Mozilla/5.0',
-    'X-IG-App-ID': IG_APP_ID,
-    'Accept': 'application/json',
-    'Referer': `https://www.instagram.com/${username}/`
-  };
-  if (cookieHeader) headers.Cookie = cookieHeader;
+  const csrf = parseCsrftokenFromCookieHeader(cookieHeader);
+  const headers = buildHeaders(username, IG_APP_ID, cookieHeader, csrf);
 
-  // 1) primeira página via web_profile_info (confiável sem login)
-  const first = await got(
+  const first = await gotJsonWithRetry(
     `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
-    { headers, http2: true }
-  ).json();
-
+    { headers },
+    3
+  );
   const user = first?.data?.user;
   const media = user?.edge_owner_to_timeline_media;
   let edges = media?.edges?.map(e => e.node) ?? [];
   let endCursor = media?.page_info?.end_cursor;
   let hasNext = media?.page_info?.has_next_page;
 
-  // 2) pagina se precisar de mais (usa doc_id estável)
   while (edges.length < wanted && hasNext && endCursor) {
     const variables = { id: userId, first: 12, after: endCursor };
+    const url = 'https://www.instagram.com/graphql/query/?' + new URLSearchParams({
+      doc_id: '17888483320059182',
+      variables: JSON.stringify(variables),
+    }).toString();
 
-    // doc_id “UserMedia”
-    const url = 'https://www.instagram.com/graphql/query/?' +
-      new URLSearchParams({
-        doc_id: '17888483320059182',
-        variables: JSON.stringify(variables),
-      }).toString();
-
-    const resp = await got(url, { headers }).json();
-    const pageEdges = resp?.data?.user?.edge_owner_to_timeline_media?.edges ?? [];
-    edges.push(...pageEdges.map(e => e.node));
-
-    const pageInfo = resp?.data?.user?.edge_owner_to_timeline_media?.page_info;
-    hasNext = pageInfo?.has_next_page;
-    endCursor = pageInfo?.end_cursor;
-
-    // Respiro para não tomar rate limit
-    await new Promise(res => setTimeout(res, 1200));
+    try {
+      const resp = await gotJsonWithRetry(url, { headers }, 2);
+      const pageEdges = resp?.data?.user?.edge_owner_to_timeline_media?.edges ?? [];
+      edges.push(...pageEdges.map(e => e.node));
+      const pageInfo = resp?.data?.user?.edge_owner_to_timeline_media?.page_info;
+      hasNext = pageInfo?.has_next_page;
+      endCursor = pageInfo?.end_cursor;
+      await sleep(1500);
+    } catch {
+      break;
+    }
   }
-
   return edges.slice(0, wanted);
 }
 
-// ---------- métricas a partir dos posts (SOMENTE o que você já coleta) ----------
+// ---------- métricas ----------
 function statsFromPosts(nodes, followers) {
   const posts = nodes.map(n => {
     const isVideo = !!n.is_video;
@@ -128,14 +142,12 @@ function statsFromPosts(nodes, followers) {
     };
   });
 
-  // engajamento médio (likes+comments) / followers
   const validEng = posts.filter(p => (p.likes + p.comments) > 0);
   const avgEng = validEng.length
     ? validEng.reduce((s, p) => s + p.likes + p.comments, 0) / validEng.length
     : 0;
   const engagementRate = followers > 0 ? (avgEng / followers) * 100 : 0;
 
-  // median views (vídeos/reels)
   const viewsArr = posts.filter(p => p.views != null).map(p => p.views).sort((a,b)=>a-b);
   let medianViews = 0;
   if (viewsArr.length) {
@@ -145,14 +157,12 @@ function statsFromPosts(nodes, followers) {
       : viewsArr[mid];
   }
 
-  // média de views (vídeos/reels)
   const videoViews = posts.filter(p => p.views != null).map(p => p.views);
   const avgViews = Math.round(mean(videoViews));
 
   return { posts, engagementRate, medianViews, avgViews };
 }
 
-// ---------- score de engajamento (0–100) usando apenas likes, comments, views, timestamps, followers ----------
 function computeEngagementScore({ posts, followers }) {
   const nowSec = Math.floor(Date.now()/1000);
 
@@ -169,42 +179,29 @@ function computeEngagementScore({ posts, followers }) {
     .filter(p => p.is_video && p.views != null && followers > 0)
     .map(p => p.views / followers);
 
-  // ER (média por post)
-  const avgER = engPerFollower.length ? mean(engPerFollower) : 0; // fração
-  const erScore = clamp01(avgER / 0.08); // 8% => 1.0
+  const avgER = engPerFollower.length ? mean(engPerFollower) : 0;
+  const erScore = clamp01(avgER / 0.08);
 
-  // Views por seguidor (mediana)
-  const medVpf = median(videoViewsPerFollower); // fração
-  const viewsScore = clamp01(medVpf / 0.08); // 8% => 1.0
+  const medVpf = median(videoViewsPerFollower);
+  const viewsScore = clamp01(medVpf / 0.08);
   const hasVideos = videoViewsPerFollower.length >= 3;
 
-  // Frequência (últimos 60d)
   const posts60d = posts.filter(p => (nowSec - (p.taken_at_timestamp||0)) <= 60*24*3600).length;
-  const freqScore = clamp01(posts60d / 12); // 12+ em 60d ~ 2/sem = 1.0
+  const freqScore = clamp01(posts60d / 12);
 
-  // Recência (decaimento)
   const lastPost = posts.length ? Math.max(...posts.map(p => p.taken_at_timestamp||0)) : 0;
   const daysSince = lastPost ? (nowSec - lastPost) / 86400 : 999;
-  const recencyScore = clamp01(Math.exp(-daysSince / 10)); // half-life ~10d
+  const recencyScore = clamp01(Math.exp(-daysSince / 10));
 
-  // Comentários/(likes+comments) (mediana)
   const medCommentsShare = median(commentsShare);
-  const commentShareScore = clamp01(medCommentsShare / 0.20); // 20% => 1.0
+  const commentShareScore = clamp01(medCommentsShare / 0.20);
 
-  // Consistência (CV do engajamento por post)
   const mEng = mean(engPerPost);
   const sdEng = stddev(engPerPost);
   const cv = mEng > 0 ? sdEng / mEng : 999;
   const consistencyScore = clamp01((2.0 - Math.min(2.0, cv)) / (2.0 - 0.6));
 
-  const W = {
-    er: 0.35,
-    views: 0.25,
-    freq: 0.15,
-    recency: 0.10,
-    commentShare: 0.10,
-    consistency: 0.05,
-  };
+  const W = { er: 0.35, views: 0.25, freq: 0.15, recency: 0.10, commentShare: 0.10, consistency: 0.05 };
   const erWeight = hasVideos ? W.er : (W.er + W.views);
   const viewsWeight = hasVideos ? W.views : 0;
 
@@ -251,7 +248,6 @@ Actor.main(async () => {
     proxy = { useApifyProxy: true }
   } = input || {};
 
-  // monta header de cookies se vierem
   let cookieHeader = '';
   if (useLoginCookies && cookies) {
     try {
@@ -262,7 +258,7 @@ Actor.main(async () => {
     }
   }
 
-  const limit = pLimit(2); // evita rate limit
+  const limit = pLimit(1); // menos concorrência -> menos 401/429
   const results = [];
 
   await Promise.all(usernames.map(username => limit(async () => {
@@ -282,30 +278,26 @@ Actor.main(async () => {
       const gender = guessGender(profile, username);
 
       const item = {
-        // ---- pedidos novos ----
-        nome: profile.full_name || null,
-        link_da_conta: accountUrl,
-        email: email,
-        seguidores: followers,
-        media_de_views: avgViews, // média de views de vídeos recentes
-        score_de_engajamento_0a100: scoreObj.score,
-        genero: gender, // 'masculino' | 'feminino' | 'desconhecido'
+        'Nome': profile.full_name || null,
+        'Link do perfil': accountUrl,
+        'Email': email,
+        'Seguidores': followers,
+        'Média de Views': avgViews,
+        'Score de Engajamento (0-100)': scoreObj.score,
+        'Masculino ou feminino': gender,
 
-        // ---- campos que você já tinha ----
         username,
-        full_name: profile.full_name,
         biography: profile.biography,
         is_verified: profile.is_verified,
         external_url: profile.external_url,
         category_name: profile.category_name,
         profile_pic_url: profile.profile_pic_url_hd || profile.profile_pic_url,
-        followers,
         following,
         posts_count: profile.edge_owner_to_timeline_media?.count ?? null,
         engagement_rate_pct: Number(engagementRate.toFixed(2)),
         median_views_recent: medianViews,
         recent_posts_analyzed: posts.length,
-        recent_sample: posts.slice(0, 12), // amostra
+        recent_sample: posts.slice(0, 12),
         health_grade: scoreObj.grade,
         health_components: scoreObj.components,
         scraped_at: new Date().toISOString()
@@ -318,6 +310,5 @@ Actor.main(async () => {
     }
   })));
 
-  // também salva um output “consolidado”
   await Actor.setValue('SUMMARY.json', results);
 });
