@@ -2,6 +2,7 @@
   "name": "instagram-profile-tracker",
   "type": "module",
   "dependencies": {
+    "https-proxy-agent": "^7.0.2",
     "apify": "^3.1.8",
     "crawlee": "^3.8.2",
     "got": "^13.0.0",
