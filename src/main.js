@@ -182,14 +182,12 @@ function isApprovedInfluencer(profile, metrics) {
 
   const followers = metrics.followers || 0;
   const following = metrics.following || 0;
-  const postsAnalyzed = metrics.recent_posts_analyzed || 0;
-  const erPct = metrics.engagement_rate_pct || 0;
+  const erPctCombined = metrics.engagement_rate_pct || 0; // já combinado
   const mvr = metrics.median_views_recent || 0;
 
   if (followers < 3000) return false;
   if (ratio(followers, following) < 1.2) return false;
-  if (postsAnalyzed < 12) return false; // frequência mínima ajustada
-  if (!meetsEngagementThreshold(followers, erPct)) return false;
+  if (!meetsEngagementThreshold(followers, erPctCombined)) return false;
   if (followers >= 10000 && mvr && mvr < 0.1 * followers) return false;
 
   return true;
@@ -464,10 +462,15 @@ Actor.main(async () => {
       const email = extractEmailFromProfile(profile);
       const gender = guessGender(profile, username);
 
+      // ===== métricas com views =====
+      const baseViews = medianViews || avgViews || 0;
+      const viewRatePct = followers > 0 ? (baseViews / followers) * 100 : 0;
+      const engagementCombinedPct = +(0.7 * engagementRate + 0.3 * viewRatePct).toFixed(2);
+
       const approved = isApprovedInfluencer(profile, {
         followers,
         following,
-        engagement_rate_pct: Number(engagementRate.toFixed(2)),
+        engagement_rate_pct: engagementCombinedPct, // usa combinado
         median_views_recent: medianViews,
         recent_posts_analyzed: posts.length
       });
@@ -489,15 +492,19 @@ Actor.main(async () => {
         profile_pic_url: profile.profile_pic_url_hd || profile.profile_pic_url,
         following,
         posts_count: profile.edge_owner_to_timeline_media?.count ?? null,
-        engagement_rate_pct: Number(engagementRate.toFixed(2)),
+
+        // >>> métricas de engajamento
+        engagement_rate_pct_raw: Number(engagementRate.toFixed(2)),   // likes+comments
+        view_rate_pct: Number(viewRatePct.toFixed(2)),                // views/seguidores
+        engagement_rate_pct_combined: engagementCombinedPct,          // 0.7*ER + 0.3*VR (aprov.)
         median_views_recent: medianViews,
         recent_posts_analyzed: posts.length,
+
         recent_sample: posts.slice(0, 12),
         health_grade: scoreObj.grade,
         health_components: scoreObj.components,
         scraped_at: new Date().toISOString(),
 
-        // sem location
         approved
       };
 
