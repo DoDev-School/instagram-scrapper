@@ -24,8 +24,8 @@ function stddev(arr) {
   return Math.sqrt(v);
 }
 function ratio(a, b) { return b ? a / b : 0; }
-function normalize(text='') {
-  return text.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
+function normalize(text = '') {
+  return text.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
 }
 
 // ============== Headers / Cookies / Proxy ==============
@@ -142,9 +142,9 @@ function guessGender(profile, username = '') {
   if (femPron && !mascPron) return 'feminino';
   if (mascPron && !femPron) return 'masculino';
 
-  const token = (full.split(/\s+/)[0] || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const FEM = new Set(['ana','maria','mariana','juliana','camila','larissa','beatriz','giovanna','amanda','carla','luiza','luisa','patricia','isabela','isabel','isabella','bruna','bia','gabriela','barbara','fernanda','aline','leticia','sofia','sofia','thais','tatiana','flavia','raissa','raisa','virginia','virginia']);
-  const MASC = new Set(['joao','jose','carlos','pedro','paulo','mateus','matheus','rafael','lucas','bruno','thiago','tiago','fernando','gustavo','leo','leonardo','marcos','marcio','andre','rodrigo','roberto','rodrigo','henrique','vitor','victor','daniel','diego','felipe','igor','neymar','russell','russo','russolimah','russian']);
+  const token = (full.split(/\s+/)[0] || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const FEM = new Set(['ana', 'maria', 'mariana', 'juliana', 'camila', 'larissa', 'beatriz', 'giovanna', 'amanda', 'carla', 'luiza', 'luisa', 'patricia', 'isabela', 'isabel', 'isabella', 'bruna', 'bia', 'gabriela', 'barbara', 'fernanda', 'aline', 'leticia', 'sofia', 'sofia', 'thais', 'tatiana', 'flavia', 'raissa', 'raisa', 'virginia', 'virginia']);
+  const MASC = new Set(['joao', 'jose', 'carlos', 'pedro', 'paulo', 'mateus', 'matheus', 'rafael', 'lucas', 'bruno', 'thiago', 'tiago', 'fernando', 'gustavo', 'leo', 'leonardo', 'marcos', 'marcio', 'andre', 'rodrigo', 'roberto', 'rodrigo', 'henrique', 'vitor', 'victor', 'daniel', 'diego', 'felipe', 'igor', 'neymar', 'russell', 'russo', 'russolimah', 'russian']);
   if (FEM.has(token)) return 'feminino';
   if (MASC.has(token)) return 'masculino';
 
@@ -158,13 +158,13 @@ function guessGender(profile, username = '') {
 
 // ============== Classificações: comercial x moda ==============
 const STORE_KEYWORDS = [
-  'loja','store','boutique','outlet','atacado','varejo','multimarcas','brecho','brechó',
-  'delivery','catalogo','catálogo','pedido','encomenda','frete','pix'
+  'loja', 'store', 'boutique', 'outlet', 'atacado', 'varejo', 'multimarcas', 'brecho', 'brechó',
+  'delivery', 'catalogo', 'catálogo', 'pedido', 'encomenda', 'frete', 'pix'
 ];
 
 const FASHION_KEYWORDS = [
-  'moda','fashion','estilo','look','looks','outfit','ootd','streetwear',
-  'menswear','womenswear','modelo','stylist','consultor de imagem','consultora de imagem'
+  'moda', 'fashion', 'estilo', 'look', 'looks', 'outfit', 'ootd', 'streetwear',
+  'menswear', 'womenswear', 'modelo', 'stylist', 'consultor de imagem', 'consultora de imagem'
 ];
 
 function isCommercialProfile(profile) {
@@ -189,20 +189,21 @@ function isFashionProfile(profile) {
   return catFashion || textHit;
 }
 
-// regra de "view rate" mínima por tier (para não punir micro demais)
-function minViewRateByTier(f) {
-  if (f >= 100000 && f < 500000) return 0.08; // mid
-  if (f >= 500000) return 0.08;               // macro/mega
-  if (f >= 10000) return 0.06;                // micro
-  if (f >= 3000) return 0.05;                 // 3k–10k
-  return 0.00;
+// Substitua a função antiga por esta (retorna %)
+function minViewRateByTierPct(followers) {
+  if (followers >= 500000) return 6.0;   // macro/mega
+  if (followers >= 100000) return 5.0;   // mid
+  if (followers >= 10000) return 4.0;   // micro
+  if (followers >= 3000) return 3.0;   // 3k–10k
+  return 0.0;
 }
+
 
 function meetsEngagementThreshold(followers, erPctCombined) {
   if (followers >= 1_000_000) return erPctCombined >= 0.8;
-  if (followers >= 100_000)  return erPctCombined >= 1.2;
-  if (followers >= 10_000)   return erPctCombined >= 1.8;
-  if (followers >= 3_000)    return erPctCombined >= 2.5;
+  if (followers >= 100_000) return erPctCombined >= 1.2;
+  if (followers >= 10_000) return erPctCombined >= 1.8;
+  if (followers >= 3_000) return erPctCombined >= 2.5;
   return false;
 }
 
@@ -239,10 +240,26 @@ function isApprovedInfluencer(profile, metrics) {
   }
 
   // Reprova se view rate abaixo do mínimo esperado
-  const minVR = minViewRateByTier(followers);
-  if (mvr && minVR > 0 && mvr < minVR * followers) {
-    motivos.push(`View rate abaixo do mínimo (${mvr} views medianas)`);
+  // ---- Gate de View Rate (mais flexível)
+  const vrMinPct = minViewRateByTierPct(followers);               // corte em %
+  const actualVRPct = Number.isFinite(metrics.view_rate_pct)
+    ? metrics.view_rate_pct                                       // já vem do main (baseViews/followers*100)
+    : (followers > 0 && metrics.median_views_recent
+      ? (metrics.median_views_recent / followers) * 100
+      : 0);
+
+  // aplica só se tivermos VR calculável > 0 e houver um corte > 0
+  if (actualVRPct > 0 && vrMinPct > 0) {
+    const GRACE_PP = 0.6; // tolerância de 0.6 pontos percentuais
+
+    if (actualVRPct + GRACE_PP < vrMinPct) {
+      motivos.push(`View rate abaixo do mínimo (${actualVRPct.toFixed(2)}% < ${vrMinPct.toFixed(2)}%)`);
+    } else if (actualVRPct < vrMinPct) {
+      // não reprova, só loga aviso para auditoria
+      console.log(`⚠️ ATENÇÃO (VR na faixa de tolerância): ${profile.username} | VR ${actualVRPct.toFixed(2)}% ~ corte ${vrMinPct.toFixed(2)}%`);
+    }
   }
+
 
   if (motivos.length > 0) {
     console.log(`❌ REPROVADO: ${profile.username} | Motivos: ${motivos.join("; ")}`);
@@ -402,23 +419,23 @@ function computeEngagementScoreV4({ posts, followers }) {
 
   const tier =
     F < 10000 ? 'nano' :
-    F < 100000 ? 'micro' :
-    F < 500000 ? 'mid' :
-    F < 2000000 ? 'macro' : 'mega';
+      F < 100000 ? 'micro' :
+        F < 500000 ? 'mid' :
+          F < 2000000 ? 'macro' : 'mega';
 
   const baseW = {
-    nano:  { er: 0.45, vpf: 0.15, abs: 0.00, freq: 0.12, rec: 0.10, cshare: 0.08, consist: 0.10 },
+    nano: { er: 0.45, vpf: 0.15, abs: 0.00, freq: 0.12, rec: 0.10, cshare: 0.08, consist: 0.10 },
     micro: { er: 0.38, vpf: 0.20, abs: 0.04, freq: 0.12, rec: 0.10, cshare: 0.08, consist: 0.08 },
-    mid:   { er: 0.30, vpf: 0.22, abs: 0.15, freq: 0.12, rec: 0.08, cshare: 0.07, consist: 0.06 },
+    mid: { er: 0.30, vpf: 0.22, abs: 0.15, freq: 0.12, rec: 0.08, cshare: 0.07, consist: 0.06 },
     macro: { er: 0.24, vpf: 0.20, abs: 0.28, freq: 0.12, rec: 0.08, cshare: 0.05, consist: 0.03 },
-    mega:  { er: 0.18, vpf: 0.20, abs: 0.35, freq: 0.12, rec: 0.07, cshare: 0.05, consist: 0.03 },
+    mega: { er: 0.18, vpf: 0.20, abs: 0.35, freq: 0.12, rec: 0.07, cshare: 0.05, consist: 0.03 },
   }[tier];
 
-  const erW  = hasVideos ? baseW.er  : (baseW.er + baseW.vpf);
+  const erW = hasVideos ? baseW.er : (baseW.er + baseW.vpf);
   const vpfW = hasVideos ? baseW.vpf : 0;
   const absW = baseW.abs;
 
-  const erScore  = clamp01(erNorm / 1.8);
+  const erScore = clamp01(erNorm / 1.8);
   const vpfScore = clamp01(vpfNorm / 1.8);
   const absScore = clamp01(absRatio / 1.8);
 
