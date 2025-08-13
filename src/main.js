@@ -25,9 +25,7 @@ function stddev(arr) {
 }
 function ratio(a, b) { return b ? a / b : 0; }
 function normalize(text='') {
-  return text
-    .normalize('NFD').replace(/\p{Diacritic}/gu,'')
-    .toLowerCase();
+  return text.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
 }
 
 // ============== Headers / Cookies / Proxy ==============
@@ -85,8 +83,8 @@ async function ensureSession() {
         'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8',
       },
     });
-  } catch (e) {
-    // segue mesmo assim (algumas vezes o preflight redireciona)
+  } catch (_) {
+    // segue mesmo assim
   } finally {
     sessionPrepared = true;
   }
@@ -132,85 +130,45 @@ function extractEmailFromProfile(profile) {
   return null;
 }
 
-// ===== GÊNERO (substituir função atual) =====
+// ===== GÊNERO =====
 function guessGender(profile, username = '') {
   const bio = (profile?.biography || '').toLowerCase();
   const cat = (profile?.category_name || '').toLowerCase();
   const uname = (username || '').toLowerCase();
   const full = (profile?.full_name || '').toLowerCase();
 
-  // 1) sinais explícitos em bio/categoria
   const femPron = /(ela\/dela|she\/her|mulher|blogueira|modelo feminina|moda feminina|womenswear|feminina)\b/i.test(bio) || /(womenswear|feminina)\b/i.test(cat);
   const mascPron = /(ele\/dele|he\/him|homem|blogueiro|modelo masculino|moda masculina|menswear|masculina)\b/i.test(bio) || /(menswear|masculina)\b/i.test(cat);
   if (femPron && !mascPron) return 'feminino';
   if (mascPron && !femPron) return 'masculino';
 
-  // 2) inferência por nome próprio (primeiro token)
   const token = (full.split(/\s+/)[0] || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   const FEM = new Set(['ana','maria','mariana','juliana','camila','larissa','beatriz','giovanna','amanda','carla','luiza','luisa','patricia','isabela','isabel','isabella','bruna','bia','gabriela','barbara','fernanda','aline','leticia','sofia','sofia','thais','tatiana','flavia','raissa','raisa','virginia','virginia']);
   const MASC = new Set(['joao','jose','carlos','pedro','paulo','mateus','matheus','rafael','lucas','bruno','thiago','tiago','fernando','gustavo','leo','leonardo','marcos','marcio','andre','rodrigo','roberto','rodrigo','henrique','vitor','victor','daniel','diego','felipe','igor','neymar','russell','russo','russolimah','russian']);
-
   if (FEM.has(token)) return 'feminino';
   if (MASC.has(token)) return 'masculino';
 
-  // 3) heurística leve por username (cautelosa)
   if (/(^|[^a-z])(girl|garota|feminina|dela)([^a-z]|$)/i.test(uname)) return 'feminino';
   if (/(^|[^a-z])(boy|garoto|masculina|dele|mens)([^a-z]|$)/i.test(uname)) return 'masculino';
 
-  // 4) fallback por terminação do primeiro nome
   if (token.endsWith('a')) return 'feminino';
   if (token.endsWith('o') || token.endsWith('r') || token.endsWith('s')) return 'masculino';
-
   return 'desconhecido';
 }
 
-// ============== Heurísticas: localização e aprovação ==============
-// *** Critério de PERFIL COMERCIAL — APENAS 2 REGRAS ***
-// 1) categoria em uma lista típica de loja/serviço
-const STORE_CATEGORIES = [
-  'shopping & retail','clothing (brand)','product/service','local business','loja de roupas',
-  'shopping','retail','retail company','ecommerce','e-commerce'
-];
-
-// 2) termos de loja no username OU full_name (sem "oficial")
+// ============== Aprovação (sem categoria e sem localização) ==============
+// Somente termos de "loja" em username/full_name
 const STORE_KEYWORDS = [
   'loja','store','boutique','outlet','atacado','varejo','multimarcas','brecho','brechó',
   'delivery','catalogo','catálogo','pedido','encomenda','frete','pix'
 ];
 
 function isCommercialProfile(profile) {
-  const cat = normalize(profile?.category_name || profile?.business_category_name || '');
   const uname = normalize(profile?.username || '');
   const fname = normalize(profile?.full_name || '');
-
-  const catIsStore = STORE_CATEGORIES.some(c => cat.includes(c));
-  const nameHasStore = STORE_KEYWORDS.some(k => uname.includes(k) || fname.includes(k));
-
-  return catIsStore || nameHasStore;
+  return STORE_KEYWORDS.some(k => uname.includes(k) || fname.includes(k));
 }
 
-// Localização a partir de: business_address/city_name -> posts (location.name) -> bio (cidades comuns)
-function inferLocation(profile, posts=[]) {
-  const cityFromBiz = profile?.business_address_json?.city_name || profile?.city_name;
-  if (cityFromBiz) return cityFromBiz;
-
-  const locCounts = new Map();
-  for (const p of posts) {
-    const name = p?.location_name;
-    if (name) locCounts.set(name, (locCounts.get(name)||0)+1);
-  }
-  if (locCounts.size) {
-    return [...locCounts.entries()].sort((a,b)=>b[1]-a[1])[0][0];
-  }
-
-  const bio = profile?.biography || '';
-  const hits = ['São Paulo','SP','Rio de Janeiro','RJ','Belo Horizonte','BH','Curitiba','PR',
-                'Porto Alegre','RS','Recife','PE','Salvador','BA','Florianópolis','SC','Brasília','DF'];
-  const found = hits.find(h => new RegExp(`\\b${h}\\b`, 'i').test(bio));
-  return found || null;
-}
-
-// Aprovação (influenciador real) — mantém critérios gerais + frequência mínima 18
 function meetsEngagementThreshold(followers, erPct) {
   if (followers >= 1_000_000) return erPct >= 0.8;
   if (followers >= 100_000)  return erPct >= 1.2;
@@ -230,9 +188,8 @@ function isApprovedInfluencer(profile, metrics) {
 
   if (followers < 3000) return false;
   if (ratio(followers, following) < 1.2) return false;
-  if (postsAnalyzed < 18) return false; // << aumentado para 18
+  if (postsAnalyzed < 12) return false; // frequência mínima ajustada
   if (!meetsEngagementThreshold(followers, erPct)) return false;
-
   if (followers >= 10000 && mvr && mvr < 0.1 * followers) return false;
 
   return true;
@@ -244,7 +201,6 @@ async function igFetchProfile(username) {
   const csrf = await getCsrfFromJar();
   const headers = buildHeaders(username, IG_APP_ID, csrf);
 
-  // 1) endpoint mobile
   const u1 = `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
   try {
     const res = await gotJsonWithRetry(u1, { headers, maxRetries: 3 });
@@ -254,7 +210,6 @@ async function igFetchProfile(username) {
     if (![401, 403].includes(sc)) throw e;
   }
 
-  // 2) fallback host (alguns PoPs exigem)
   const u2 = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
   const res2 = await gotJsonWithRetry(u2, { headers, maxRetries: 3 });
   return res2?.data?.user;
@@ -265,7 +220,6 @@ async function igFetchPosts(username, userId, wanted = 24) {
   const csrf = await getCsrfFromJar();
   const headers = buildHeaders(username, IG_APP_ID, csrf);
 
-  // primeira página via web_profile_info
   const first = await gotJsonWithRetry(
     `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
     { headers, maxRetries: 3 }
@@ -311,13 +265,11 @@ function statsFromPosts(nodes, followers) {
     const likes = n.edge_liked_by?.count ?? n.edge_media_preview_like?.count ?? 0;
     const comments = n.edge_media_to_comment?.count ?? 0;
     const views = isVideo ? (n.video_view_count ?? 0) : null;
-    const location_name = n?.location?.name ?? null; // << manter localização do post
     return {
       shortcode: n.shortcode,
       taken_at_timestamp: n.taken_at_timestamp,
       is_video: isVideo,
-      likes, comments, views,
-      location_name
+      likes, comments, views
     };
   });
 
@@ -342,13 +294,11 @@ function statsFromPosts(nodes, followers) {
   return { posts, engagementRate, medianViews, avgViews };
 }
 
-// ============== Score V3 (normalizado + alcance absoluto) ==============
-// ===== SCORE V4 (substituir a V3) =====
+// ============== SCORE V4 ==============
 function computeEngagementScoreV4({ posts, followers }) {
   const nowSec = Math.floor(Date.now() / 1000);
   const F = Math.max(1, followers);
 
-  // ---- métricas base
   const engPerPost = posts.map(p => (p.likes || 0) + (p.comments || 0));
   const engPerFollower = engPerPost.map(e => e / F);
   const avgER = engPerFollower.length ? mean(engPerFollower) : 0;
@@ -369,21 +319,20 @@ function computeEngagementScoreV4({ posts, followers }) {
   const sdEng = stddev(engPerPost);
   const cv = mEng > 0 ? sdEng / mEng : 999;
 
-  // ---- expectativa por tamanho (mesmo formato, mas caps mais generosos)
   function expectedER(f) {
     const k = 0.03, beta = 0.30;
     const base = Math.pow(Math.max(1, f) / 10000, -beta);
-    return Math.max(0.003, Math.min(0.10, k * base)); // 0.3%–10%
+    return Math.max(0.003, Math.min(0.10, k * base));
   }
   function expectedVPF(f) {
     const k = 0.12, beta = 0.25;
     const base = Math.pow(Math.max(1, f) / 10000, -beta);
-    return Math.max(0.008, Math.min(0.60, k * base)); // 0.8%–60%
+    return Math.max(0.008, Math.min(0.60, k * base));
   }
 
   const erExp = expectedER(F);
   const vpfExp = expectedVPF(F);
-  const erNorm = erExp ? (avgER / erExp) : 0;      // >=1 = no esperado
+  const erNorm = erExp ? (avgER / erExp) : 0;
   const vpfNorm = vpfExp ? (medVPF / vpfExp) : 0;
 
   const hasVideos = vpfList.length >= 3;
@@ -393,7 +342,6 @@ function computeEngagementScoreV4({ posts, followers }) {
   const expectedAbs = (hasVideos ? vpfExp : erExp) * F;
   const absRatio = expectedAbs > 0 ? (medAbsViews / expectedAbs) : 0;
 
-  // ---- tiers e pesos (ABS muito forte em macro/mega)
   const tier =
     F < 10000 ? 'nano' :
     F < 100000 ? 'micro' :
@@ -412,12 +360,10 @@ function computeEngagementScoreV4({ posts, followers }) {
   const vpfW = hasVideos ? baseW.vpf : 0;
   const absW = baseW.abs;
 
-  // ---- mapeamento dos norms para 0..1 (100 possível)
   const erScore  = clamp01(erNorm / 1.8);
   const vpfScore = clamp01(vpfNorm / 1.8);
   const absScore = clamp01(absRatio / 1.8);
 
-  // frequência permanece no score (indicador independente)
   const freqScore = clamp01(posts60d / 10);
   const recencyScore = clamp01(Math.exp(-(daysSince) / (tier === 'mega' ? 20 : 14)));
   const medCommentsShare = median(commentsShare);
@@ -471,11 +417,11 @@ Actor.main(async () => {
     postsLimit = 24,
     useLoginCookies = false,
     cookies = '',
-    proxy = { useApifyProxy: true }, // defina groups se tiver acesso (ex.: ['RESIDENTIAL'])
+    proxy = { useApifyProxy: true },
     concurrency = 1,
   } = input || {};
 
-  // Proxy (seguro)
+  // Proxy
   proxyConfiguration = undefined;
   try {
     if (proxy && (proxy.useApifyProxy || (Array.isArray(proxy.proxyUrls) && proxy.proxyUrls.length))) {
@@ -518,8 +464,6 @@ Actor.main(async () => {
       const email = extractEmailFromProfile(profile);
       const gender = guessGender(profile, username);
 
-      // ---- NOVOS CAMPOS ----
-      const location = inferLocation(profile, posts);
       const approved = isApprovedInfluencer(profile, {
         followers,
         following,
@@ -553,9 +497,8 @@ Actor.main(async () => {
         health_components: scoreObj.components,
         scraped_at: new Date().toISOString(),
 
-        // ---- adicionados ao OUTPUT ----
-        location,          // string|null
-        approved           // boolean
+        // sem location
+        approved
       };
 
       results.push(item);
