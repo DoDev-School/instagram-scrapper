@@ -51,37 +51,45 @@ let proxyConfiguration = null;
  * Cria um agent HTTP/HTTPS usando uma nova sessão do Apify Proxy a cada chamada.
  * Isso ajuda a reduzir 401/403/429 por IP marcado.
  */
+// --- substitua sua buildAgent por esta:
 function buildAgent() {
-  if (!proxyConfiguration) return undefined;
-  const proxyUrl = proxyConfiguration.newUrl(); // nova sessão
-  const agent = new HttpsProxyAgent(proxyUrl);
-  return { http: agent, https: agent };
+  try {
+    if (!proxyConfiguration) return undefined;
+    const proxyUrl = proxyConfiguration.newUrl?.();
+    if (!proxyUrl || typeof proxyUrl !== 'string') return undefined;
+    const agent = new HttpsProxyAgent(proxyUrl);
+    return { http: agent, https: agent };
+  } catch {
+    return undefined; // fallback: sem proxy
+  }
 }
+
 
 /**
  * gotJson com retry + rotação de sessão de proxy + backoff com jitter.
  */
+// --- em gotJsonWithRetry, registre quando estiver sem proxy (opcional):
 async function gotJsonWithRetry(url, options = {}, maxRetries = 3) {
   let attempt = 0;
   let wait = 1200;
-
   while (true) {
     try {
-      const agent = buildAgent();
+      const agent = buildAgent(); // pode ser undefined
+      if (!agent && attempt === 0) {
+        console.warn('Executando requisição SEM proxy agent para:', url);
+      }
       return await got(url, {
         throwHttpErrors: true,
-        agent,
+        agent,                           // só aplica se existir
         timeout: { request: 20000 },
-        // http2: false // omitido para forçar HTTP/1.1
         ...options,
       }).json();
     } catch (err) {
       const status = err?.response?.statusCode || err?.code;
       attempt++;
-      const retriable = [401, 403, 429].includes(status) || err?.name === 'RequestError' || err?.name === 'TimeoutError';
+      const retriable = [401,403,429].includes(status) || err?.name === 'RequestError' || err?.name === 'TimeoutError';
       if (attempt > maxRetries || !retriable) throw err;
-
-      await sleep(wait + Math.floor(Math.random() * 800)); // jitter
+      await sleep(wait + Math.floor(Math.random() * 800));
       wait = Math.min(wait * 2, 8000);
     }
   }
@@ -256,16 +264,16 @@ function computeEngagementScoreV2({ posts, followers }) {
 
   const tier =
     F < 10000 ? 'nano' :
-    F < 100000 ? 'micro' :
-    F < 500000 ? 'mid' :
-    F < 2000000 ? 'macro' : 'mega';
+      F < 100000 ? 'micro' :
+        F < 500000 ? 'mid' :
+          F < 2000000 ? 'macro' : 'mega';
 
   const baseW = {
-    nano:  { er: 0.40, vpf: 0.15, freq: 0.15, rec: 0.10, cshare: 0.10, consist: 0.10 },
+    nano: { er: 0.40, vpf: 0.15, freq: 0.15, rec: 0.10, cshare: 0.10, consist: 0.10 },
     micro: { er: 0.35, vpf: 0.20, freq: 0.15, rec: 0.10, cshare: 0.10, consist: 0.10 },
-    mid:   { er: 0.30, vpf: 0.25, freq: 0.15, rec: 0.10, cshare: 0.10, consist: 0.10 },
+    mid: { er: 0.30, vpf: 0.25, freq: 0.15, rec: 0.10, cshare: 0.10, consist: 0.10 },
     macro: { er: 0.25, vpf: 0.30, freq: 0.15, rec: 0.10, cshare: 0.10, consist: 0.10 },
-    mega:  { er: 0.22, vpf: 0.33, freq: 0.15, rec: 0.10, cshare: 0.10, consist: 0.10 },
+    mega: { er: 0.22, vpf: 0.33, freq: 0.15, rec: 0.10, cshare: 0.10, consist: 0.10 },
   }[tier];
 
   const hasEnoughVideos = videoViewsPerFollower.length >= 3;
@@ -333,6 +341,7 @@ function computeEngagementScoreV2({ posts, followers }) {
 }
 
 // ===================== Main =====================
+// --- no Actor.main, inicialize o proxy de forma segura:
 Actor.main(async () => {
   const input = await Actor.getInput();
   const {
@@ -340,12 +349,21 @@ Actor.main(async () => {
     postsLimit = 24,
     useLoginCookies = false,
     cookies = '',
-    proxy = { useApifyProxy: true, groups: ['RESIDENTIAL'] }, // pode ajustar os grupos conforme seu plano
+    // cuidado: se não quiser usar proxy, passe { useApifyProxy: false }
+    proxy = { useApifyProxy: true }, 
     concurrency = 1
   } = input || {};
 
-  // Proxy configuration a partir do input (Apify gerencia Apify Proxy aqui)
-  proxyConfiguration = await Actor.createProxyConfiguration(proxy);
+  // cria config só se fizer sentido
+  proxyConfiguration = undefined;
+  try {
+    if (proxy && (proxy.useApifyProxy || (Array.isArray(proxy.proxyUrls) && proxy.proxyUrls.length))) {
+      proxyConfiguration = await Actor.createProxyConfiguration(proxy);
+    }
+  } catch (e) {
+    console.warn('Proxy desabilitado (falha ao criar config):', e?.message || e);
+    proxyConfiguration = undefined;
+  }
 
   // Cookies de login (opcional)
   let cookieHeader = '';
