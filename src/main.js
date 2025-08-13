@@ -126,20 +126,38 @@ function extractEmailFromProfile(profile) {
   return null;
 }
 
+// ===== GÊNERO (substituir função atual) =====
 function guessGender(profile, username = '') {
   const bio = (profile?.biography || '').toLowerCase();
   const cat = (profile?.category_name || '').toLowerCase();
   const uname = (username || '').toLowerCase();
+  const full = (profile?.full_name || '').toLowerCase();
 
-  const femPron = /(ela\/dela|she\/her|mulher|blogueira|modelo feminina|moda feminina|womenswear|feminina)/i.test(bio) || /(womenswear|feminina)/i.test(cat);
-  const mascPron = /(ele\/dele|he\/him|homem|blogueiro|modelo masculino|moda masculina|menswear|masculina)/i.test(bio) || /(menswear|masculina)/i.test(cat);
-
+  // 1) sinais explícitos em bio/categoria
+  const femPron = /(ela\/dela|she\/her|mulher|blogueira|modelo feminina|moda feminina|womenswear|feminina)\b/i.test(bio) || /(womenswear|feminina)\b/i.test(cat);
+  const mascPron = /(ele\/dele|he\/him|homem|blogueiro|modelo masculino|moda masculina|menswear|masculina)\b/i.test(bio) || /(menswear|masculina)\b/i.test(cat);
   if (femPron && !mascPron) return 'feminino';
   if (mascPron && !femPron) return 'masculino';
-  if (/girls|garotas|feminina|dela/.test(uname)) return 'feminino';
-  if (/boys|garotos|masculina|dele|mens/.test(uname)) return 'masculino';
+
+  // 2) inferência por nome próprio (primeiro token)
+  const token = (full.split(/\s+/)[0] || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const FEM = new Set(['ana','maria','mariana','juliana','camila','larissa','beatriz','giovanna','amanda','carla','luiza','luisa','patricia','isabela','isabel','isabella','bruna','bia','gabriela','barbara','fernanda','aline','leticia','sofia','sofia','thais','tatiana','flavia','raissa','raisa','virginia','virginia']);
+  const MASC = new Set(['joao','jose','carlos','pedro','paulo','mateus','matheus','rafael','lucas','bruno','thiago','tiago','fernando','gustavo','leo','leonardo','marcos','marcio','andre','rodrigo','roberto','rodrigo','henrique','vitor','victor','daniel','diego','felipe','igor','neymar','russell','russo','russolimah','russian']);
+
+  if (FEM.has(token)) return 'feminino';
+  if (MASC.has(token)) return 'masculino';
+
+  // 3) heurística leve por username (cautelosa)
+  if (/(^|[^a-z])(girl|garota|feminina|dela)([^a-z]|$)/i.test(uname)) return 'feminino';
+  if (/(^|[^a-z])(boy|garoto|masculina|dele|mens)([^a-z]|$)/i.test(uname)) return 'masculino';
+
+  // 4) fallback por terminação do primeiro nome (regra fraca, só se não bateu nada)
+  if (token.endsWith('a')) return 'feminino';
+  if (token.endsWith('o') || token.endsWith('r') || token.endsWith('s')) return 'masculino';
+
   return 'desconhecido';
 }
+
 
 // ============== Fetchers IG (com fallback) ==============
 async function igFetchProfile(username) {
@@ -244,21 +262,23 @@ function statsFromPosts(nodes, followers) {
 }
 
 // ============== Score V3 (normalizado + alcance absoluto) ==============
-function computeEngagementScoreV3({ posts, followers }) {
+// ===== SCORE V4 (substituir a V3) =====
+function computeEngagementScoreV4({ posts, followers }) {
   const nowSec = Math.floor(Date.now() / 1000);
   const F = Math.max(1, followers);
 
-  // base
+  // ---- métricas base
   const engPerPost = posts.map(p => (p.likes || 0) + (p.comments || 0));
   const engPerFollower = engPerPost.map(e => e / F);
-  const avgER = engPerFollower.length ? mean(engPerFollower) : 0; // fração
+  const avgER = engPerFollower.length ? mean(engPerFollower) : 0;
 
-  const commentsShare = posts
-    .map(p => {
-      const tot = (p.likes || 0) + (p.comments || 0);
-      return tot > 0 ? (p.comments || 0) / tot : 0;
-    })
-    .filter(Number.isFinite);
+  const vpfList = posts.filter(p => p.is_video && p.views != null).map(p => p.views / F);
+  const medVPF = median(vpfList);
+
+  const commentsShare = posts.map(p => {
+    const tot = (p.likes || 0) + (p.comments || 0);
+    return tot > 0 ? (p.comments || 0) / tot : 0;
+  }).filter(Number.isFinite);
 
   const posts60d = posts.filter(p => (nowSec - (p.taken_at_timestamp || 0)) <= 60 * 24 * 3600).length;
   const lastPost = posts.length ? Math.max(...posts.map(p => p.taken_at_timestamp || 0)) : 0;
@@ -268,38 +288,31 @@ function computeEngagementScoreV3({ posts, followers }) {
   const sdEng = stddev(engPerPost);
   const cv = mEng > 0 ? sdEng / mEng : 999;
 
-  const vpfList = posts.filter(p => p.is_video && p.views != null).map(p => p.views / F);
-  const medVPF = median(vpfList); // fração
-
-  // expectativas por tamanho (heurísticas)
+  // ---- expectativa por tamanho (mesmo formato, mas caps mais generosos)
   function expectedER(f) {
-    const k = 0.03, beta = 0.30; // ~3% @10k
+    const k = 0.03, beta = 0.30;
     const base = Math.pow(Math.max(1, f) / 10000, -beta);
-    return Math.max(0.004, Math.min(0.08, k * base)); // 0.4%–8%
+    return Math.max(0.003, Math.min(0.10, k * base)); // 0.3%–10%
   }
   function expectedVPF(f) {
-    const k = 0.12, beta = 0.25; // ~12% @10k
+    const k = 0.12, beta = 0.25;
     const base = Math.pow(Math.max(1, f) / 10000, -beta);
-    return Math.max(0.01, Math.min(0.5, k * base)); // 1%–50%
+    return Math.max(0.008, Math.min(0.60, k * base)); // 0.8%–60%
   }
 
   const erExp = expectedER(F);
   const vpfExp = expectedVPF(F);
+  const erNorm = erExp ? (avgER / erExp) : 0;      // >=1 = no esperado
+  const vpfNorm = vpfExp ? (medVPF / vpfExp) : 0;
 
-  const erNorm = erExp ? avgER / erExp : 0;      // >=1 acima do esperado
-  const vpfNorm = vpfExp ? medVPF / vpfExp : 0;  // >=1 acima do esperado
-
-  // alcance absoluto (mediana de views de vídeo se existir; senão mediana de likes+comments)
   const hasVideos = vpfList.length >= 3;
   const medAbsViews = hasVideos
     ? median(posts.filter(p => p.views != null).map(p => p.views))
     : median(posts.map(p => (p.likes || 0) + (p.comments || 0)));
+  const expectedAbs = (hasVideos ? vpfExp : erExp) * F;
+  const absRatio = expectedAbs > 0 ? (medAbsViews / expectedAbs) : 0;
 
-  const expectedAbs = hasVideos ? (vpfExp * F) : (erExp * F); // baseline por tamanho
-  const absRatio = expectedAbs > 0 ? medAbsViews / expectedAbs : 0; // >=1 acima do esperado
-  const absScore = clamp01(absRatio / 1.2); // 20% acima do esperado ~ 1.0
-
-  // tier e pesos (inclui peso de alcance absoluto para macro/mega)
+  // ---- tiers e pesos (ABS muito forte em macro/mega)
   const tier =
     F < 10000 ? 'nano' :
     F < 100000 ? 'micro' :
@@ -307,39 +320,38 @@ function computeEngagementScoreV3({ posts, followers }) {
     F < 2000000 ? 'macro' : 'mega';
 
   const baseW = {
-    nano:  { er: 0.42, vpf: 0.18, abs: 0.00, freq: 0.12, rec: 0.10, cshare: 0.08, consist: 0.10 },
-    micro: { er: 0.36, vpf: 0.22, abs: 0.02, freq: 0.12, rec: 0.10, cshare: 0.08, consist: 0.10 },
-    mid:   { er: 0.30, vpf: 0.25, abs: 0.10, freq: 0.12, rec: 0.08, cshare: 0.08, consist: 0.07 },
-    macro: { er: 0.24, vpf: 0.26, abs: 0.15, freq: 0.12, rec: 0.08, cshare: 0.08, consist: 0.07 },
-    mega:  { er: 0.20, vpf: 0.25, abs: 0.22, freq: 0.12, rec: 0.08, cshare: 0.07, consist: 0.06 },
+    nano:  { er: 0.45, vpf: 0.15, abs: 0.00, freq: 0.12, rec: 0.10, cshare: 0.08, consist: 0.10 },
+    micro: { er: 0.38, vpf: 0.20, abs: 0.04, freq: 0.12, rec: 0.10, cshare: 0.08, consist: 0.08 },
+    mid:   { er: 0.30, vpf: 0.22, abs: 0.15, freq: 0.12, rec: 0.08, cshare: 0.07, consist: 0.06 },
+    macro: { er: 0.24, vpf: 0.20, abs: 0.28, freq: 0.12, rec: 0.08, cshare: 0.05, consist: 0.03 },
+    mega:  { er: 0.18, vpf: 0.20, abs: 0.35, freq: 0.12, rec: 0.07, cshare: 0.05, consist: 0.03 },
   }[tier];
 
-  // se não tiver vídeos, somar VPF em ER e manter ABS (pois ABS usa eng. absoluta)
   const erW  = hasVideos ? baseW.er  : (baseW.er + baseW.vpf);
   const vpfW = hasVideos ? baseW.vpf : 0;
   const absW = baseW.abs;
 
-  // sweet spot + menor penalidade p/ mega (agora mínimo 0.92)
-  function sweetSpotMultiplier(f) {
-    const mu = 250000, sigma = 700000;
-    const x = (f - mu) / sigma;
-    return 0.95 + 0.14 * Math.exp(-0.5 * x * x); // 0.95..1.09
-  }
-  function megaDiminishing(f) {
-    if (f < 2000000) return 1.0;
-    const t = Math.min(1, (f - 2000000) / 48000000);
-    return 1.0 - 0.08 * t; // até ~0.92 em 50M+
-  }
-  const sizeMult = sweetSpotMultiplier(F) * megaDiminishing(F);
+  // ---- mapeamento dos norms para 0..1 (100 possível)
+  // 1.8x do esperado ≈ 1.0 (permite chegar a 100)
+  const erScore  = clamp01(erNorm / 1.8);
+  const vpfScore = clamp01(vpfNorm / 1.8);
+  const absScore = clamp01(absRatio / 1.8);
 
-  // demais componentes
-  const erScore  = clamp01(erNorm / 1.15);
-  const vpfScore = clamp01(vpfNorm / 1.15);
-  const freqScore = clamp01(posts60d / 12);
-  const recencyScore = clamp01(Math.exp(-(daysSince) / 14));
+  // menos punição p/ mega no calendário
+  const freqScore = clamp01(posts60d / 10);         // antes 12
+  const recencyScore = clamp01(Math.exp(-(daysSince) / (tier === 'mega' ? 20 : 14)));
   const medCommentsShare = median(commentsShare);
-  const commentShareScore = clamp01(medCommentsShare / 0.20);
+  const commentShareScore = clamp01(medCommentsShare / 0.18);
   const consistencyScore = clamp01((2.0 - Math.min(2.0, cv)) / (2.0 - 0.6));
+
+  // ---- bônus de autoridade (faz mega/verified não "perder" de nano bom)
+  const verifiedBoost = posts.length ? 1.03 : 1.00; // pequeno empurrão (se houver posts)
+  const sizeBoost = (() => {
+    // 0.00 em 100k, ~+0.08 em 10M, ~+0.12 em 100M, cap 1.15
+    const x = Math.log10(F / 1e5);
+    const bonus = Math.max(0, x) * 0.04; // 0.04 por década acima de 100k
+    return Math.min(1.15, 1.00 + bonus);
+  })();
 
   let score01 =
     erW * erScore +
@@ -350,7 +362,9 @@ function computeEngagementScoreV3({ posts, followers }) {
     baseW.cshare * commentShareScore +
     baseW.consist * consistencyScore;
 
-  score01 = clamp01(score01 * sizeMult);
+  // aplica autoridade (sem penalizar mega)
+  score01 = clamp01(score01 * verifiedBoost * sizeBoost);
+
   const score = Math.round(score01 * 100);
   const grade = score >= 80 ? 'A' : score >= 65 ? 'B' : 'C';
 
@@ -359,18 +373,19 @@ function computeEngagementScoreV3({ posts, followers }) {
     grade,
     components: {
       tier, followers: F,
-      er_pct: +(avgER * 100).toFixed(2), er_expected_pct: +(erExp * 100).toFixed(2), er_norm: +erNorm.toFixed(3),
-      vpf_pct_med: +(medVPF * 100).toFixed(2), vpf_expected_pct: +(vpfExp * 100).toFixed(2), vpf_norm: +vpfNorm.toFixed(3),
-      abs_median: medAbsViews, abs_expected: Math.round(expectedAbs), abs_ratio: +absRatio.toFixed(2), absScore: +absScore.toFixed(3),
-      posts60d, freqScore: +freqScore.toFixed(3),
-      daysSinceLastPost: Math.round(daysSince), recencyScore: +recencyScore.toFixed(3),
-      comments_share_med_pct: +(medCommentsShare * 100).toFixed(2), commentShareScore: +commentShareScore.toFixed(3),
-      cv_engagement: Number.isFinite(cv) ? +cv.toFixed(2) : null, consistencyScore: +consistencyScore.toFixed(3),
+      er_pct: +(avgER * 100).toFixed(2), er_expected_pct: +(erExp * 100).toFixed(2), er_norm: +erNorm.toFixed(2),
+      vpf_pct_med: +(medVPF * 100).toFixed(2), vpf_expected_pct: +(vpfExp * 100).toFixed(2), vpf_norm: +vpfNorm.toFixed(2),
+      abs_median: medAbsViews, abs_expected: Math.round(expectedAbs), abs_ratio: +absRatio.toFixed(2), absScore: +absScore.toFixed(2),
+      posts60d, freqScore: +freqScore.toFixed(2),
+      daysSinceLastPost: Math.round(daysSince), recencyScore: +recencyScore.toFixed(2),
+      comments_share_med_pct: +(medCommentsShare * 100).toFixed(2), commentShareScore: +commentShareScore.toFixed(2),
+      cv_engagement: Number.isFinite(cv) ? +cv.toFixed(2) : null, consistencyScore: +consistencyScore.toFixed(2),
       weights: { er: erW, vpf: vpfW, abs: absW, freq: baseW.freq, rec: baseW.rec, cshare: baseW.cshare, consist: baseW.consist },
-      multipliers: { sweetSpot: +sweetSpotMultiplier(F).toFixed(3), megaDiminishing: +megaDiminishing(F).toFixed(3) }
+      authority_multipliers: { verifiedBoost, sizeBoost }
     }
   };
 }
+
 
 // ============== Main ==============
 Actor.main(async () => {
@@ -421,7 +436,7 @@ Actor.main(async () => {
 
       const nodes = await igFetchPosts(username, profile.id, postsLimit);
       const { posts, engagementRate, medianViews, avgViews } = statsFromPosts(nodes, followers);
-      const scoreObj = computeEngagementScoreV3({ posts, followers });
+      const scoreObj = computeEngagementScoreV4({ posts, followers });
 
       const accountUrl = `https://www.instagram.com/${username}/`;
       const email = extractEmailFromProfile(profile);
