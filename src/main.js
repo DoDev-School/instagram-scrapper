@@ -156,11 +156,15 @@ function guessGender(profile, username = '') {
   return 'desconhecido';
 }
 
-// ============== Aprovação (sem categoria e sem localização) ==============
-// Somente termos de "loja" em username/full_name
+// ============== Classificações: comercial x moda ==============
 const STORE_KEYWORDS = [
   'loja','store','boutique','outlet','atacado','varejo','multimarcas','brecho','brechó',
   'delivery','catalogo','catálogo','pedido','encomenda','frete','pix'
+];
+
+const FASHION_KEYWORDS = [
+  'moda','fashion','estilo','look','looks','outfit','ootd','streetwear',
+  'menswear','womenswear','modelo','stylist','consultor de imagem','consultora de imagem'
 ];
 
 function isCommercialProfile(profile) {
@@ -169,26 +173,57 @@ function isCommercialProfile(profile) {
   return STORE_KEYWORDS.some(k => uname.includes(k) || fname.includes(k));
 }
 
-function meetsEngagementThreshold(followers, erPct) {
-  if (followers >= 1_000_000) return erPct >= 0.8;
-  if (followers >= 100_000)  return erPct >= 1.2;
-  if (followers >= 10_000)   return erPct >= 1.8;
-  if (followers >= 3_000)    return erPct >= 2.5;
+function isFashionProfile(profile) {
+  const cat = normalize(profile?.category_name || '');
+  const bio = normalize(profile?.biography || '');
+  const fname = normalize(profile?.full_name || '');
+
+  const catFashion =
+    /\b(mod|fashion|modelo|model|blogueir[ao]|criador[ae] de conteudo( digital)?)\b/.test(cat);
+
+  const textHit = FASHION_KEYWORDS.some(k =>
+    bio.includes(k) || fname.includes(k)
+  );
+
+  // precisa ter pelo menos 1 sinal forte de moda
+  return catFashion || textHit;
+}
+
+// regra de "view rate" mínima por tier (para não punir micro demais)
+function minViewRateByTier(f) {
+  if (f >= 100000 && f < 500000) return 0.08; // mid
+  if (f >= 500000) return 0.08;               // macro/mega
+  if (f >= 10000) return 0.06;                // micro
+  if (f >= 3000) return 0.05;                 // 3k–10k
+  return 0.00;
+}
+
+function meetsEngagementThreshold(followers, erPctCombined) {
+  if (followers >= 1_000_000) return erPctCombined >= 0.8;
+  if (followers >= 100_000)  return erPctCombined >= 1.2;
+  if (followers >= 10_000)   return erPctCombined >= 1.8;
+  if (followers >= 3_000)    return erPctCombined >= 2.5;
   return false;
 }
 
 function isApprovedInfluencer(profile, metrics) {
   if (isCommercialProfile(profile)) return false;
+  if (!isFashionProfile(profile)) return false; // << só moda
 
   const followers = metrics.followers || 0;
   const following = metrics.following || 0;
-  const erPctCombined = metrics.engagement_rate_pct || 0; // já combinado
+  const erPctCombined = metrics.engagement_rate_pct || 0;
   const mvr = metrics.median_views_recent || 0;
 
   if (followers < 3000) return false;
   if (ratio(followers, following) < 1.2) return false;
+
+  // ER combinado
   if (!meetsEngagementThreshold(followers, erPctCombined)) return false;
-  if (followers >= 10000 && mvr && mvr < 0.1 * followers) return false;
+
+  // view rate mínima por tier (se houver mediana de views)
+  const minVR = minViewRateByTier(followers);
+  if (mvr && minVR > 0 && mvr < minVR * followers) return false;
 
   return true;
 }
@@ -465,12 +500,12 @@ Actor.main(async () => {
       // ===== métricas com views =====
       const baseViews = medianViews || avgViews || 0;
       const viewRatePct = followers > 0 ? (baseViews / followers) * 100 : 0;
-      const engagementCombinedPct = +(0.7 * engagementRate + 0.3 * viewRatePct).toFixed(2);
+      const engagementCombinedPct = +(0.6 * engagementRate + 0.4 * viewRatePct).toFixed(2);
 
       const approved = isApprovedInfluencer(profile, {
         followers,
         following,
-        engagement_rate_pct: engagementCombinedPct, // usa combinado
+        engagement_rate_pct: engagementCombinedPct, // combinado
         median_views_recent: medianViews,
         recent_posts_analyzed: posts.length
       });
@@ -493,10 +528,10 @@ Actor.main(async () => {
         following,
         posts_count: profile.edge_owner_to_timeline_media?.count ?? null,
 
-        // >>> métricas de engajamento
+        // métricas de engajamento
         engagement_rate_pct_raw: Number(engagementRate.toFixed(2)),   // likes+comments
         view_rate_pct: Number(viewRatePct.toFixed(2)),                // views/seguidores
-        engagement_rate_pct_combined: engagementCombinedPct,          // 0.7*ER + 0.3*VR (aprov.)
+        engagement_rate_pct_combined: engagementCombinedPct,          // 0.6*ER + 0.4*VR
         median_views_recent: medianViews,
         recent_posts_analyzed: posts.length,
 
