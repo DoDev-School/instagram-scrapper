@@ -23,6 +23,12 @@ function stddev(arr) {
   const v = mean(arr.map(x => (x - m) ** 2));
   return Math.sqrt(v);
 }
+function ratio(a, b) { return b ? a / b : 0; }
+function normalize(text='') {
+  return text
+    .normalize('NFD').replace(/\p{Diacritic}/gu,'')
+    .toLowerCase();
+}
 
 // ============== Headers / Cookies / Proxy ==============
 let proxyConfiguration = null;
@@ -151,13 +157,86 @@ function guessGender(profile, username = '') {
   if (/(^|[^a-z])(girl|garota|feminina|dela)([^a-z]|$)/i.test(uname)) return 'feminino';
   if (/(^|[^a-z])(boy|garoto|masculina|dele|mens)([^a-z]|$)/i.test(uname)) return 'masculino';
 
-  // 4) fallback por terminação do primeiro nome (regra fraca, só se não bateu nada)
+  // 4) fallback por terminação do primeiro nome
   if (token.endsWith('a')) return 'feminino';
   if (token.endsWith('o') || token.endsWith('r') || token.endsWith('s')) return 'masculino';
 
   return 'desconhecido';
 }
 
+// ============== Heurísticas: localização e aprovação ==============
+// *** Critério de PERFIL COMERCIAL — APENAS 2 REGRAS ***
+// 1) categoria em uma lista típica de loja/serviço
+const STORE_CATEGORIES = [
+  'shopping & retail','clothing (brand)','product/service','local business','loja de roupas',
+  'shopping','retail','retail company','ecommerce','e-commerce'
+];
+
+// 2) termos de loja no username OU full_name (sem "oficial")
+const STORE_KEYWORDS = [
+  'loja','store','boutique','outlet','atacado','varejo','multimarcas','brecho','brechó',
+  'delivery','catalogo','catálogo','pedido','encomenda','frete','pix'
+];
+
+function isCommercialProfile(profile) {
+  const cat = normalize(profile?.category_name || profile?.business_category_name || '');
+  const uname = normalize(profile?.username || '');
+  const fname = normalize(profile?.full_name || '');
+
+  const catIsStore = STORE_CATEGORIES.some(c => cat.includes(c));
+  const nameHasStore = STORE_KEYWORDS.some(k => uname.includes(k) || fname.includes(k));
+
+  return catIsStore || nameHasStore;
+}
+
+// Localização a partir de: business_address/city_name -> posts (location.name) -> bio (cidades comuns)
+function inferLocation(profile, posts=[]) {
+  const cityFromBiz = profile?.business_address_json?.city_name || profile?.city_name;
+  if (cityFromBiz) return cityFromBiz;
+
+  const locCounts = new Map();
+  for (const p of posts) {
+    const name = p?.location_name;
+    if (name) locCounts.set(name, (locCounts.get(name)||0)+1);
+  }
+  if (locCounts.size) {
+    return [...locCounts.entries()].sort((a,b)=>b[1]-a[1])[0][0];
+  }
+
+  const bio = profile?.biography || '';
+  const hits = ['São Paulo','SP','Rio de Janeiro','RJ','Belo Horizonte','BH','Curitiba','PR',
+                'Porto Alegre','RS','Recife','PE','Salvador','BA','Florianópolis','SC','Brasília','DF'];
+  const found = hits.find(h => new RegExp(`\\b${h}\\b`, 'i').test(bio));
+  return found || null;
+}
+
+// Aprovação (influenciador real) — mantém critérios gerais + frequência mínima 18
+function meetsEngagementThreshold(followers, erPct) {
+  if (followers >= 1_000_000) return erPct >= 0.8;
+  if (followers >= 100_000)  return erPct >= 1.2;
+  if (followers >= 10_000)   return erPct >= 1.8;
+  if (followers >= 3_000)    return erPct >= 2.5;
+  return false;
+}
+
+function isApprovedInfluencer(profile, metrics) {
+  if (isCommercialProfile(profile)) return false;
+
+  const followers = metrics.followers || 0;
+  const following = metrics.following || 0;
+  const postsAnalyzed = metrics.recent_posts_analyzed || 0;
+  const erPct = metrics.engagement_rate_pct || 0;
+  const mvr = metrics.median_views_recent || 0;
+
+  if (followers < 3000) return false;
+  if (ratio(followers, following) < 1.2) return false;
+  if (postsAnalyzed < 18) return false; // << aumentado para 18
+  if (!meetsEngagementThreshold(followers, erPct)) return false;
+
+  if (followers >= 10000 && mvr && mvr < 0.1 * followers) return false;
+
+  return true;
+}
 
 // ============== Fetchers IG (com fallback) ==============
 async function igFetchProfile(username) {
@@ -232,11 +311,13 @@ function statsFromPosts(nodes, followers) {
     const likes = n.edge_liked_by?.count ?? n.edge_media_preview_like?.count ?? 0;
     const comments = n.edge_media_to_comment?.count ?? 0;
     const views = isVideo ? (n.video_view_count ?? 0) : null;
+    const location_name = n?.location?.name ?? null; // << manter localização do post
     return {
       shortcode: n.shortcode,
       taken_at_timestamp: n.taken_at_timestamp,
       is_video: isVideo,
-      likes, comments, views
+      likes, comments, views,
+      location_name
     };
   });
 
@@ -332,24 +413,21 @@ function computeEngagementScoreV4({ posts, followers }) {
   const absW = baseW.abs;
 
   // ---- mapeamento dos norms para 0..1 (100 possível)
-  // 1.8x do esperado ≈ 1.0 (permite chegar a 100)
   const erScore  = clamp01(erNorm / 1.8);
   const vpfScore = clamp01(vpfNorm / 1.8);
   const absScore = clamp01(absRatio / 1.8);
 
-  // menos punição p/ mega no calendário
-  const freqScore = clamp01(posts60d / 10);         // antes 12
+  // frequência permanece no score (indicador independente)
+  const freqScore = clamp01(posts60d / 10);
   const recencyScore = clamp01(Math.exp(-(daysSince) / (tier === 'mega' ? 20 : 14)));
   const medCommentsShare = median(commentsShare);
   const commentShareScore = clamp01(medCommentsShare / 0.18);
   const consistencyScore = clamp01((2.0 - Math.min(2.0, cv)) / (2.0 - 0.6));
 
-  // ---- bônus de autoridade (faz mega/verified não "perder" de nano bom)
-  const verifiedBoost = posts.length ? 1.03 : 1.00; // pequeno empurrão (se houver posts)
+  const verifiedBoost = posts.length ? 1.03 : 1.00;
   const sizeBoost = (() => {
-    // 0.00 em 100k, ~+0.08 em 10M, ~+0.12 em 100M, cap 1.15
     const x = Math.log10(F / 1e5);
-    const bonus = Math.max(0, x) * 0.04; // 0.04 por década acima de 100k
+    const bonus = Math.max(0, x) * 0.04;
     return Math.min(1.15, 1.00 + bonus);
   })();
 
@@ -362,7 +440,6 @@ function computeEngagementScoreV4({ posts, followers }) {
     baseW.cshare * commentShareScore +
     baseW.consist * consistencyScore;
 
-  // aplica autoridade (sem penalizar mega)
   score01 = clamp01(score01 * verifiedBoost * sizeBoost);
 
   const score = Math.round(score01 * 100);
@@ -385,7 +462,6 @@ function computeEngagementScoreV4({ posts, followers }) {
     }
   };
 }
-
 
 // ============== Main ==============
 Actor.main(async () => {
@@ -442,6 +518,16 @@ Actor.main(async () => {
       const email = extractEmailFromProfile(profile);
       const gender = guessGender(profile, username);
 
+      // ---- NOVOS CAMPOS ----
+      const location = inferLocation(profile, posts);
+      const approved = isApprovedInfluencer(profile, {
+        followers,
+        following,
+        engagement_rate_pct: Number(engagementRate.toFixed(2)),
+        median_views_recent: medianViews,
+        recent_posts_analyzed: posts.length
+      });
+
       const item = {
         'Nome': profile.full_name || null,
         'Link do perfil': accountUrl,
@@ -465,7 +551,11 @@ Actor.main(async () => {
         recent_sample: posts.slice(0, 12),
         health_grade: scoreObj.grade,
         health_components: scoreObj.components,
-        scraped_at: new Date().toISOString()
+        scraped_at: new Date().toISOString(),
+
+        // ---- adicionados ao OUTPUT ----
+        location,          // string|null
+        approved           // boolean
       };
 
       results.push(item);
