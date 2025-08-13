@@ -207,24 +207,49 @@ function meetsEngagementThreshold(followers, erPctCombined) {
 }
 
 function isApprovedInfluencer(profile, metrics) {
-  if (isCommercialProfile(profile)) return false;
-  if (!isFashionProfile(profile)) return false; // << só moda
-
+  const motivos = [];
   const followers = metrics.followers || 0;
   const following = metrics.following || 0;
   const erPctCombined = metrics.engagement_rate_pct || 0;
   const mvr = metrics.median_views_recent || 0;
 
-  if (followers < 3000) return false;
-  if (ratio(followers, following) < 1.2) return false;
+  // Reprova se for perfil comercial
+  if (isCommercialProfile(profile)) {
+    motivos.push("Perfil comercial/loja detectado");
+  }
 
-  // ER combinado
-  if (!meetsEngagementThreshold(followers, erPctCombined)) return false;
+  // Reprova se não for perfil de moda
+  if (!isFashionProfile(profile)) {
+    motivos.push("Categoria/tema não relacionado à moda");
+  }
 
-  // view rate mínima por tier (se houver mediana de views)
+  // Reprova se seguidores < 3000
+  if (followers < 3000) {
+    motivos.push("Menos de 3000 seguidores");
+  }
+
+  // Reprova se relação followers/following < 1.2
+  if (ratio(followers, following) < 1.2) {
+    motivos.push("Proporção seguidores/seguindo menor que 1.2");
+  }
+
+  // Reprova se ER combinado abaixo do mínimo
+  if (!meetsEngagementThreshold(followers, erPctCombined)) {
+    motivos.push(`Engajamento combinado baixo (${erPctCombined}%)`);
+  }
+
+  // Reprova se view rate abaixo do mínimo esperado
   const minVR = minViewRateByTier(followers);
-  if (mvr && minVR > 0 && mvr < minVR * followers) return false;
+  if (mvr && minVR > 0 && mvr < minVR * followers) {
+    motivos.push(`View rate abaixo do mínimo (${mvr} views medianas)`);
+  }
 
+  if (motivos.length > 0) {
+    console.log(`❌ REPROVADO: ${profile.username} | Motivos: ${motivos.join("; ")}`);
+    return false;
+  }
+
+  console.log(`✅ APROVADO: ${profile.username} | Seguidores: ${followers} | ER combinado: ${erPctCombined}%`);
   return true;
 }
 
