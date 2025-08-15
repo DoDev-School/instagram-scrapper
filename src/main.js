@@ -94,6 +94,7 @@ async function ensureSession() {
 async function gotJsonWithRetry(url, { headers = {}, maxRetries = 3 } = {}) {
   let attempt = 0;
   let wait = 1200;
+  const isShortcode = /\/media\/shortcode\//i.test(url) || /\/p\/[^/]+\/\?__a=1/i.test(url);
 
   while (true) {
     try {
@@ -108,13 +109,15 @@ async function gotJsonWithRetry(url, { headers = {}, maxRetries = 3 } = {}) {
     } catch (err) {
       const status = err?.response?.statusCode || err?.code;
       attempt++;
-      const retriable = [401, 403, 429].includes(status) || err?.name === 'RequestError' || err?.name === 'TimeoutError';
+      const retriableCodes = isShortcode ? [401, 403, 404, 429] : [401, 403, 429];
+      const retriable = retriableCodes.includes(status) || err?.name === 'RequestError' || err?.name === 'TimeoutError';
       if (attempt > maxRetries || !retriable) throw err;
       await sleep(wait + Math.floor(Math.random() * 800));
       wait = Math.min(wait * 2, 8000);
     }
   }
 }
+
 
 // ============== Extração de dados do perfil ==============
 function extractEmailFromProfile(profile) {
@@ -290,10 +293,31 @@ async function igFetchProfile(username) {
   return res2?.data?.user;
 }
 
+// ===== Helpers de URL / Username =====
+function isUrl(x = '') {
+  return /^https?:\/\//i.test(x);
+}
 
-// ================== NOVO: extrair @ a partir de link de post com múltiplos fallbacks ==================
+// Extrai username de URL de perfil (ex.: https://www.instagram.com/neymarjr/…)
+function usernameFromProfileUrl(url) {
+  try {
+    const u = new URL(url);
+    if (!/instagram\.com$/i.test(u.hostname) && !/instagram\.com$/i.test(u.hostname.replace(/^www\./, ''))) return null;
+    const seg = u.pathname.split('/').filter(Boolean);
+    if (!seg.length) return null;
+    const first = seg[0].toLowerCase();
+    // Ignorar rotas que não são perfil
+    const reserved = new Set(['p', 'reel', 'tv', 'stories', 'explore', 'accounts', 'graphql', 'api', 'directory']);
+    if (reserved.has(first)) return null;
+    return first;
+  } catch {
+    return null;
+  }
+}
+
+
+// ================== extrair @ a partir de link de post com múltiplos fallbacks ==================
 async function usernameFromPostUrl(postUrl) {
-  // Aceita /p/, /reel/ e /tv/
   const m = postUrl.match(/\/(p|reel|tv)\/([^/?#]+)/i);
   if (!m) throw new Error(`Link de post inválido: ${postUrl}`);
   const shortcode = m[2];
@@ -303,68 +327,52 @@ async function usernameFromPostUrl(postUrl) {
   const headers = buildHeaders('post', IG_APP_ID, csrf);
   const agent = buildAgent();
 
-  // 1) Tenta API mobile (mais permissiva)
+  // 1) API mobile
   try {
     const url1 = `https://i.instagram.com/api/v1/media/shortcode/${encodeURIComponent(shortcode)}/`;
     const json1 = await gotJsonWithRetry(url1, { headers, maxRetries: 2 });
     const uname1 = json1?.items?.[0]?.user?.username;
     if (uname1) return uname1;
-  } catch (_) {}
+  } catch (_) { }
 
-  // 2) Tenta API web
+  // 2) API web
   try {
     const url2 = `https://www.instagram.com/api/v1/media/shortcode/${encodeURIComponent(shortcode)}/`;
     const json2 = await gotJsonWithRetry(url2, { headers, maxRetries: 2 });
     const uname2 = json2?.items?.[0]?.user?.username;
     if (uname2) return uname2;
-  } catch (_) {}
+  } catch (_) { }
 
-  // 3) Tenta o endpoint antigo do post (ainda funciona em alguns casos)
+  // 3) Endpoint antigo
   try {
     const url3 = `https://www.instagram.com/p/${encodeURIComponent(shortcode)}/?__a=1&__d=dis`;
     const json3 = await got(url3, {
-      agent,
-      cookieJar,
-      timeout: { request: 20000 },
-      headers: {
-        ...headers,
-        'Accept': 'application/json',
-        'Referer': 'https://www.instagram.com/',
-      },
+      agent, cookieJar, timeout: { request: 20000 },
+      headers: { ...headers, 'Accept': 'application/json', 'Referer': 'https://www.instagram.com/' },
     }).json();
     const uname3 = json3?.graphql?.shortcode_media?.owner?.username;
     if (uname3) return uname3;
-  } catch (_) {}
+  } catch (_) { }
 
-  // 4) Fallback definitivo: baixa o HTML e extrai do og:description → "... (@username) ..."
+  // 4) HTML
   try {
     const html = await got(`https://www.instagram.com/p/${encodeURIComponent(shortcode)}/`, {
-      agent,
-      cookieJar,
-      timeout: { request: 20000 },
-      headers: {
-        ...headers,
-        'Accept': 'text/html,application/xhtml+xml',
-      },
+      agent, cookieJar, timeout: { request: 20000 },
+      headers: { ...headers, 'Accept': 'text/html,application/xhtml+xml' },
     }).text();
 
-    // meta og:description costuma conter "… (@username) …"
     const ogMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i);
     if (ogMatch) {
-      const desc = ogMatch[1];
-      const u = desc.match(/\(@([a-z0-9._]+)\)/i);
+      const u = ogMatch[1].match(/\(@([a-z0-9._]+)\)/i);
       if (u) return u[1];
     }
-
-    // outro fallback simples: procurar "owner":{"username":"..."} no HTML (aparece em alguns builds)
     const jsMatch = html.match(/"owner"\s*:\s*{[^}]*"username"\s*:\s*"([^"]+)"/i);
     if (jsMatch) return jsMatch[1];
-  } catch (e) {
-    // segue para erro final
-  }
+  } catch (_) { }
 
   throw new Error(`Não consegui extrair o username do post: ${postUrl}`);
 }
+
 
 
 async function igFetchPosts(username, userId, wanted = 24) {
@@ -565,8 +573,9 @@ function computeEngagementScoreV4({ posts, followers }) {
 Actor.main(async () => {
   const input = await Actor.getInput();
   const {
-    usernames = [],
-    postUrls = [], // <<< NOVO
+    usernames = [],       // pode receber @, link de post ou de perfil
+    postUrls = [],        // opcional (se quiser separar)
+    profileUrls = [],     // opcional (se quiser separar)
     postsLimit = 24,
     useLoginCookies = false,
     cookies = '',
@@ -599,23 +608,51 @@ Actor.main(async () => {
     }
   }
 
-  const postUsernames = [];
-  for (const url of postUrls) {
+  // =============== Resolver qualquer entrada (usernames, postUrls, profileUrls ou links colados em usernames) ===============
+  const rawTargets = [
+    ...usernames,
+    ...postUrls,
+    ...profileUrls,
+  ].filter(Boolean);
+
+  async function resolveToUsername(target) {
+    const t = String(target).trim();
+
+    if (isUrl(t)) {
+      if (/(\/(p|reel|tv)\/)/i.test(t)) {
+        return await usernameFromPostUrl(t);
+      }
+      const fromProfile = usernameFromProfileUrl(t);
+      if (fromProfile) return fromProfile;
+      throw new Error(`URL não reconhecida como post ou perfil: ${t}`);
+    }
+
+    if (t.startsWith('@')) return t.slice(1);
+    return t;
+  }
+
+  const resolvedUsernames = [];
+  for (const target of rawTargets) {
     try {
-      const uname = await usernameFromPostUrl(url);
-      postUsernames.push(uname);
-    } catch (err) {
-      console.warn('Erro ao extrair username de post:', url, err.message);
+      const uname = await resolveToUsername(target);
+      if (uname) resolvedUsernames.push(uname.toLowerCase());
+    } catch (e) {
+      const payload = { username: String(target), error: String(e) };
+      await Actor.pushData(payload);
+      console.warn('Resolver falhou:', payload);
     }
   }
 
-  const allUsernames = [...usernames, ...postUsernames];
-
+  const allUsernames = Array.from(new Set(resolvedUsernames));
+  if (!allUsernames.length) {
+    throw new Error('Nenhum alvo válido (username/post/profile) foi resolvido.');
+  }
 
   const limit = pLimit(Math.max(1, Number(concurrency) || 1));
   const results = [];
 
   await Promise.all(allUsernames.map(username => limit(async () => {
+
 
     try {
       const profile = await igFetchProfile(username);
