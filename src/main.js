@@ -290,6 +290,32 @@ async function igFetchProfile(username) {
   return res2?.data?.user;
 }
 
+// ================== NOVO: extrair @ de link de post ==================
+async function usernameFromPostUrl(postUrl) {
+  const match = postUrl.match(/\/p\/([^/?#]+)/);
+  if (!match) throw new Error(`Link inválido de post: ${postUrl}`);
+  const shortcode = match[1];
+  const url = `https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`;
+
+  const agent = buildAgent();
+  const res = await got(url, {
+    agent,
+    cookieJar,
+    headers: {
+      'User-Agent': 'Mozilla/5.0',
+      'Accept': 'application/json',
+      'Referer': 'https://www.instagram.com/',
+      'X-IG-App-ID': IG_APP_ID,
+    },
+    timeout: { request: 20000 },
+  }).json();
+
+  const username = res?.graphql?.shortcode_media?.owner?.username;
+  if (!username) throw new Error(`Não consegui extrair username do post: ${postUrl}`);
+  return username;
+}
+
+
 async function igFetchPosts(username, userId, wanted = 24) {
   await ensureSession();
   const csrf = await getCsrfFromJar();
@@ -489,12 +515,14 @@ Actor.main(async () => {
   const input = await Actor.getInput();
   const {
     usernames = [],
+    postUrls = [], // <<< NOVO
     postsLimit = 24,
     useLoginCookies = false,
     cookies = '',
     proxy = { useApifyProxy: true },
     concurrency = 1,
   } = input || {};
+
 
   // Proxy
   proxyConfiguration = undefined;
@@ -520,10 +548,24 @@ Actor.main(async () => {
     }
   }
 
+  const postUsernames = [];
+  for (const url of postUrls) {
+    try {
+      const uname = await usernameFromPostUrl(url);
+      postUsernames.push(uname);
+    } catch (err) {
+      console.warn('Erro ao extrair username de post:', url, err.message);
+    }
+  }
+
+  const allUsernames = [...usernames, ...postUsernames];
+
+
   const limit = pLimit(Math.max(1, Number(concurrency) || 1));
   const results = [];
 
-  await Promise.all(usernames.map(username => limit(async () => {
+  await Promise.all(allUsernames.map(username => limit(async () => {
+
     try {
       const profile = await igFetchProfile(username);
       if (!profile) throw new Error('Perfil não encontrado.');
