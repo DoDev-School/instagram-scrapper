@@ -290,29 +290,80 @@ async function igFetchProfile(username) {
   return res2?.data?.user;
 }
 
-// ================== NOVO: extrair @ de link de post ==================
+
+// ================== NOVO: extrair @ a partir de link de post com múltiplos fallbacks ==================
 async function usernameFromPostUrl(postUrl) {
-  const match = postUrl.match(/\/p\/([^/?#]+)/);
-  if (!match) throw new Error(`Link inválido de post: ${postUrl}`);
-  const shortcode = match[1];
-  const url = `https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`;
+  // Aceita /p/, /reel/ e /tv/
+  const m = postUrl.match(/\/(p|reel|tv)\/([^/?#]+)/i);
+  if (!m) throw new Error(`Link de post inválido: ${postUrl}`);
+  const shortcode = m[2];
 
+  await ensureSession();
+  const csrf = await getCsrfFromJar();
+  const headers = buildHeaders('post', IG_APP_ID, csrf);
   const agent = buildAgent();
-  const res = await got(url, {
-    agent,
-    cookieJar,
-    headers: {
-      'User-Agent': 'Mozilla/5.0',
-      'Accept': 'application/json',
-      'Referer': 'https://www.instagram.com/',
-      'X-IG-App-ID': IG_APP_ID,
-    },
-    timeout: { request: 20000 },
-  }).json();
 
-  const username = res?.graphql?.shortcode_media?.owner?.username;
-  if (!username) throw new Error(`Não consegui extrair username do post: ${postUrl}`);
-  return username;
+  // 1) Tenta API mobile (mais permissiva)
+  try {
+    const url1 = `https://i.instagram.com/api/v1/media/shortcode/${encodeURIComponent(shortcode)}/`;
+    const json1 = await gotJsonWithRetry(url1, { headers, maxRetries: 2 });
+    const uname1 = json1?.items?.[0]?.user?.username;
+    if (uname1) return uname1;
+  } catch (_) {}
+
+  // 2) Tenta API web
+  try {
+    const url2 = `https://www.instagram.com/api/v1/media/shortcode/${encodeURIComponent(shortcode)}/`;
+    const json2 = await gotJsonWithRetry(url2, { headers, maxRetries: 2 });
+    const uname2 = json2?.items?.[0]?.user?.username;
+    if (uname2) return uname2;
+  } catch (_) {}
+
+  // 3) Tenta o endpoint antigo do post (ainda funciona em alguns casos)
+  try {
+    const url3 = `https://www.instagram.com/p/${encodeURIComponent(shortcode)}/?__a=1&__d=dis`;
+    const json3 = await got(url3, {
+      agent,
+      cookieJar,
+      timeout: { request: 20000 },
+      headers: {
+        ...headers,
+        'Accept': 'application/json',
+        'Referer': 'https://www.instagram.com/',
+      },
+    }).json();
+    const uname3 = json3?.graphql?.shortcode_media?.owner?.username;
+    if (uname3) return uname3;
+  } catch (_) {}
+
+  // 4) Fallback definitivo: baixa o HTML e extrai do og:description → "... (@username) ..."
+  try {
+    const html = await got(`https://www.instagram.com/p/${encodeURIComponent(shortcode)}/`, {
+      agent,
+      cookieJar,
+      timeout: { request: 20000 },
+      headers: {
+        ...headers,
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+    }).text();
+
+    // meta og:description costuma conter "… (@username) …"
+    const ogMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i);
+    if (ogMatch) {
+      const desc = ogMatch[1];
+      const u = desc.match(/\(@([a-z0-9._]+)\)/i);
+      if (u) return u[1];
+    }
+
+    // outro fallback simples: procurar "owner":{"username":"..."} no HTML (aparece em alguns builds)
+    const jsMatch = html.match(/"owner"\s*:\s*{[^}]*"username"\s*:\s*"([^"]+)"/i);
+    if (jsMatch) return jsMatch[1];
+  } catch (e) {
+    // segue para erro final
+  }
+
+  throw new Error(`Não consegui extrair o username do post: ${postUrl}`);
 }
 
 
