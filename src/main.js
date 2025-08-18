@@ -201,7 +201,6 @@ function minViewRateByTierPct(followers) {
   return 0.0;
 }
 
-
 function meetsEngagementThreshold(followers, erPctCombined) {
   if (followers >= 1_000_000) return erPctCombined >= 0.8;
   if (followers >= 100_000) return erPctCombined >= 1.2;
@@ -243,26 +242,21 @@ function isApprovedInfluencer(profile, metrics) {
   }
 
   // Reprova se view rate abaixo do mínimo esperado
-  // ---- Gate de View Rate (mais flexível)
-  const vrMinPct = minViewRateByTierPct(followers);               // corte em %
+  const vrMinPct = minViewRateByTierPct(followers);
   const actualVRPct = Number.isFinite(metrics.view_rate_pct)
-    ? metrics.view_rate_pct                                       // já vem do main (baseViews/followers*100)
+    ? metrics.view_rate_pct
     : (followers > 0 && metrics.median_views_recent
       ? (metrics.median_views_recent / followers) * 100
       : 0);
 
-  // aplica só se tivermos VR calculável > 0 e houver um corte > 0
   if (actualVRPct > 0 && vrMinPct > 0) {
-    const GRACE_PP = 0.6; // tolerância de 0.6 pontos percentuais
-
+    const GRACE_PP = 0.6;
     if (actualVRPct + GRACE_PP < vrMinPct) {
       motivos.push(`View rate abaixo do mínimo (${actualVRPct.toFixed(2)}% < ${vrMinPct.toFixed(2)}%)`);
     } else if (actualVRPct < vrMinPct) {
-      // não reprova, só loga aviso para auditoria
       console.log(`⚠️ ATENÇÃO (VR na faixa de tolerância): ${profile.username} | VR ${actualVRPct.toFixed(2)}% ~ corte ${vrMinPct.toFixed(2)}%`);
     }
   }
-
 
   if (motivos.length > 0) {
     console.log(`❌ REPROVADO: ${profile.username} | Motivos: ${motivos.join("; ")}`);
@@ -298,7 +292,6 @@ function isUrl(x = '') {
   return /^https?:\/\//i.test(x);
 }
 
-// Extrai username de URL de perfil (ex.: https://www.instagram.com/neymarjr/…)
 function usernameFromProfileUrl(url) {
   try {
     const u = new URL(url);
@@ -306,7 +299,6 @@ function usernameFromProfileUrl(url) {
     const seg = u.pathname.split('/').filter(Boolean);
     if (!seg.length) return null;
     const first = seg[0].toLowerCase();
-    // Ignorar rotas que não são perfil
     const reserved = new Set(['p', 'reel', 'tv', 'stories', 'explore', 'accounts', 'graphql', 'api', 'directory']);
     if (reserved.has(first)) return null;
     return first;
@@ -314,7 +306,6 @@ function usernameFromProfileUrl(url) {
     return null;
   }
 }
-
 
 // ================== extrair @ a partir de link de post com múltiplos fallbacks ==================
 async function usernameFromPostUrl(postUrl) {
@@ -352,28 +343,26 @@ async function usernameFromPostUrl(postUrl) {
     }).json();
     const uname3 = json3?.graphql?.shortcode_media?.owner?.username;
     if (uname3) return uname3;
-  } catch (_) { }
+  } } catch (_) { }
 
-  // 4) HTML
-  try {
-    const html = await got(`https://www.instagram.com/p/${encodeURIComponent(shortcode)}/`, {
-      agent, cookieJar, timeout: { request: 20000 },
-      headers: { ...headers, 'Accept': 'text/html,application/xhtml+xml' },
-    }).text();
+// 4) HTML
+try {
+  const html = await got(`https://www.instagram.com/p/${encodeURIComponent(shortcode)}/`, {
+    agent, cookieJar, timeout: { request: 20000 },
+    headers: { ...headers, 'Accept': 'text/html,application/xhtml+xml' },
+  }).text();
 
-    const ogMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i);
-    if (ogMatch) {
-      const u = ogMatch[1].match(/\(@([a-z0-9._]+)\)/i);
-      if (u) return u[1];
-    }
-    const jsMatch = html.match(/"owner"\s*:\s*{[^}]*"username"\s*:\s*"([^"]+)"/i);
-    if (jsMatch) return jsMatch[1];
-  } catch (_) { }
+  const ogMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i);
+  if (ogMatch) {
+    const u = ogMatch[1].match(/\(@([a-z0-9._]+)\)/i);
+    if (u) return u[1];
+  }
+  const jsMatch = html.match(/"owner"\s*:\s*{[^}]*"username"\s*:\s*"([^"]+)"/i);
+  if (jsMatch) return jsMatch[1];
+} catch (_) { }
 
-  throw new Error(`Não consegui extrair o username do post: ${postUrl}`);
+throw new Error(`Não consegui extrair o username do post: ${postUrl}`);
 }
-
-
 
 async function igFetchPosts(username, userId, wanted = 24) {
   await ensureSession();
@@ -569,20 +558,160 @@ function computeEngagementScoreV4({ posts, followers }) {
   };
 }
 
+/* =========================
+   LOCALIZAÇÃO (Brasil vs não)
+   ========================= */
+
+// Estados/abreviações e pistas geográficas do Brasil
+const BR_STATES = [
+  'acre', 'alagoas', 'amapa', 'amazonas', 'bahia', 'ceara', 'distrito federal', 'espirito santo', 'goias',
+  'maranhao', 'mato grosso', 'mato grosso do sul', 'minas gerais', 'para', 'paraiba', 'parana', 'pernambuco',
+  'piaui', 'rio de janeiro', 'rio grande do norte', 'rio grande do sul', 'rondonia', 'roraima', 'santa catarina',
+  'sao paulo', 'sergipe', 'tocantins', 'df', 'sp', 'rj', 'mg', 'rs', 'sc', 'pr', 'ba', 'pe', 'ce', 'pa', 'mt', 'ms', 'go', 'pb', 'rn', 'pi', 'al', 'se', 'ro', 'rr', 'ap', 'to', 'ac', 'am'
+];
+
+const BR_CITIES_HINTS = [
+  'sao paulo', 'rio de janeiro', 'brasilia', 'brasilia df', 'salvador', 'fortaleza', 'belo horizonte', 'curitiba',
+  'manaus', 'recife', 'porto alegre', 'goiania', 'belem', 'guarulhos', 'campinas', 'sao luis', 'sao goncalo',
+  'maceio', 'duque de caxias', 'natal', 'teresina', 'campo grande', 'sao bernardo do campo', 'nova iguacu',
+  'joao pessoa', 'santo andre', 'osasco', 'jaboatao', 'contagem', 'aracaju', 'feira de santana', 'sorocaba',
+  'ribeirao preto', 'uberlandia', 'cuiaba', 'londrina', 'juiz de fora', 'joinville', 'niteroi', 'sao jose dos campos'
+];
+
+// Termos/expressões típicas de PT-BR (só aceitamos BR, não PT-PT)
+const PTBR_TERMS = [
+  'você', 'vc', 'cê', 'pra', 'tá', 'tô', 'curtir', 'galera', 'parceria', 'frete', 'pix', 'boleto', 'parcelado',
+  'carnaval', 'sextou', 'feriadão', 'novidade imperdível', 'cupom', 'agenda aberta', 'arrasta pra cima', 'parça'
+];
+
+function hasBrazilFlag(text = '') {
+  return /🇧🇷|brasil\b/i.test(text);
+}
+
+function urlIsBR(u = '') {
+  return /\.br(\/|$)/i.test(u);
+}
+
+function emailIsBR(email = '') {
+  const m = email.toLowerCase().match(/@[^@]+$/);
+  return m ? /\.br$/.test(m[0]) : false;
+}
+
+function nodeLocationIsBR(node) {
+  const loc = node?.location;
+  if (!loc) return false;
+  const hay = normalize([loc?.name, loc?.slug, loc?.city, loc?.address, loc?.short_name].filter(Boolean).join(' '));
+  if (!hay) return false;
+  if (hay.includes('brasil') || hay.includes('brazil')) return true;
+  if (BR_STATES.some(s => hay.includes(s))) return true;
+  if (BR_CITIES_HINTS.some(c => hay.includes(c))) return true;
+  return false;
+}
+
+function extractCaption(node) {
+  const capEdge = node?.edge_media_to_caption?.edges;
+  if (Array.isArray(capEdge) && capEdge.length && capEdge[0]?.node?.text) {
+    return String(capEdge[0].node.text);
+  }
+  // fallback comuns em algumas versões
+  if (node?.accessibility_caption) return String(node.accessibility_caption);
+  return '';
+}
+
+function ptbrScore(text = '') {
+  const norm = normalize(text);
+  let score = 0;
+  for (const t of PTBR_TERMS) {
+    if (norm.includes(normalize(t))) score++;
+  }
+  // Sinais bem fortes:
+  if (/(\bR\$|\bpix\b)/i.test(text)) score += 2;
+  return score;
+}
+
+function classifyBrazil(profile, nodes) {
+  const reasons = [];
+  const signals = {
+    geo_from_posts: false,
+    flag_in_profile: false,
+    email_br: false,
+    url_br: false,
+    captions_ptbr: false,
+    bio_ptbr: false,
+  };
+
+  // 1) Geo em posts
+  const geoBR = nodes.some(n => nodeLocationIsBR(n));
+  if (geoBR) {
+    signals.geo_from_posts = true;
+    reasons.push('Local marcado em post no Brasil');
+  }
+
+  // 2) Sinais oficiais/meta
+  const bio = profile?.biography || '';
+  const fname = profile?.full_name || '';
+  const hasFlag = hasBrazilFlag(bio) || hasBrazilFlag(fname);
+  if (hasFlag) {
+    signals.flag_in_profile = true;
+    reasons.push('🇧🇷 na bio/nome');
+  }
+  const email = extractEmailFromProfile(profile) || '';
+  if (email && emailIsBR(email)) {
+    signals.email_br = true;
+    reasons.push('E-mail .br');
+  }
+  const ext = profile?.external_url || '';
+  if (ext && urlIsBR(ext)) {
+    signals.url_br = true;
+    reasons.push('URL .br');
+  }
+
+  // 3) Idioma PT-BR (somente e apenas PT-BR)
+  //   — analisamos bio + últimas legendas; exigimos uma pontuação mínima
+  const captions = nodes.slice(0, 12).map(extractCaption).filter(Boolean);
+  const capScore = captions.reduce((s, c) => s + ptbrScore(c), 0);
+  const bioScore = ptbrScore(bio);
+
+  const CAP_THRESHOLD = 3; // soma de termos fortes nas últimas legendas
+  const BIO_THRESHOLD = 2; // bio com termos BR
+
+  if (capScore >= CAP_THRESHOLD) {
+    signals.captions_ptbr = true;
+    reasons.push('Legendas recentes em PT-BR');
+  }
+  if (bioScore >= BIO_THRESHOLD) {
+    signals.bio_ptbr = true;
+    reasons.push('Bio em PT-BR');
+  }
+
+  // Decisão final:
+  // Se qualquer sinal geográfico/“oficial” for verdadeiro -> Brasil.
+  // Se não houver sinais “oficiais”, aceite Brasil apenas com evidência forte de PT-BR.
+  const strongOfficial = signals.geo_from_posts || signals.flag_in_profile || signals.email_br || signals.url_br;
+  const strongLanguage = signals.captions_ptbr || signals.bio_ptbr;
+
+  const isBrazil = !!(strongOfficial || strongLanguage);
+
+  return {
+    isBrazil,
+    reasons,
+    signals
+  };
+}
+
 // ============== Main ==============
 Actor.main(async () => {
   const input = await Actor.getInput();
   const {
-    usernames = [],       // pode receber @, link de post ou de perfil
-    postUrls = [],        // opcional (se quiser separar)
-    profileUrls = [],     // opcional (se quiser separar)
+    usernames = [],
+    postUrls = [],
+    profileUrls = [],
     postsLimit = 24,
     useLoginCookies = false,
     cookies = '',
     proxy = { useApifyProxy: true },
     concurrency = 1,
   } = input || {};
-
 
   // Proxy
   proxyConfiguration = undefined;
@@ -608,25 +737,16 @@ Actor.main(async () => {
     }
   }
 
-  // =============== Resolver qualquer entrada (usernames, postUrls, profileUrls ou links colados em usernames) ===============
-  const rawTargets = [
-    ...usernames,
-    ...postUrls,
-    ...profileUrls,
-  ].filter(Boolean);
+  const rawTargets = [...usernames, ...postUrls, ...profileUrls].filter(Boolean);
 
   async function resolveToUsername(target) {
     const t = String(target).trim();
-
     if (isUrl(t)) {
-      if (/(\/(p|reel|tv)\/)/i.test(t)) {
-        return await usernameFromPostUrl(t);
-      }
+      if (/(\/(p|reel|tv)\/)/i.test(t)) return await usernameFromPostUrl(t);
       const fromProfile = usernameFromProfileUrl(t);
       if (fromProfile) return fromProfile;
       throw new Error(`URL não reconhecida como post ou perfil: ${t}`);
     }
-
     if (t.startsWith('@')) return t.slice(1);
     return t;
   }
@@ -644,16 +764,12 @@ Actor.main(async () => {
   }
 
   const allUsernames = Array.from(new Set(resolvedUsernames));
-  if (!allUsernames.length) {
-    throw new Error('Nenhum alvo válido (username/post/profile) foi resolvido.');
-  }
+  if (!allUsernames.length) throw new Error('Nenhum alvo válido.');
 
   const limit = pLimit(Math.max(1, Number(concurrency) || 1));
   const results = [];
 
   await Promise.all(allUsernames.map(username => limit(async () => {
-
-
     try {
       const profile = await igFetchProfile(username);
       if (!profile) throw new Error('Perfil não encontrado.');
@@ -665,22 +781,27 @@ Actor.main(async () => {
       const { posts, engagementRate, medianViews, avgViews } = statsFromPosts(nodes, followers);
       const scoreObj = computeEngagementScoreV4({ posts, followers });
 
-      const accountUrl = `https://www.instagram.com/${username}/`;
-      const email = extractEmailFromProfile(profile);
-      const gender = guessGender(profile, username);
+      // ===== localização (Brasil ou não) =====
+      const locationInfo = classifyBrazil(profile, nodes);
 
       // ===== métricas com views =====
       const baseViews = medianViews || avgViews || 0;
       const viewRatePct = followers > 0 ? (baseViews / followers) * 100 : 0;
       const engagementCombinedPct = +(0.6 * engagementRate + 0.4 * viewRatePct).toFixed(2);
 
-      const approved = isApprovedInfluencer(profile, {
+      let approved = isApprovedInfluencer(profile, {
         followers,
         following,
-        engagement_rate_pct: engagementCombinedPct, // combinado
+        engagement_rate_pct: engagementCombinedPct,
         median_views_recent: medianViews,
         recent_posts_analyzed: posts.length
       });
+
+      // 🚨 reprova automaticamente se não for do Brasil
+      if (!locationInfo.isBrazil) {
+        console.log(`❌ REPROVADO: ${profile.username} | Motivo: Usuário não identificado como do Brasil`);
+        approved = false;
+      }
 
       const item = {
         'Nome': profile.full_name || null,
@@ -690,6 +811,7 @@ Actor.main(async () => {
         'Média de Views': avgViews,
         'Score de Engajamento (0-100)': scoreObj.score,
         'Masculino ou feminino': gender,
+        'Do Brasil': !!locationInfo.isBrazil,   // <-- único campo no output
 
         username,
         biography: profile.biography,
@@ -700,10 +822,9 @@ Actor.main(async () => {
         following,
         posts_count: profile.edge_owner_to_timeline_media?.count ?? null,
 
-        // métricas de engajamento
-        engagement_rate_pct_raw: Number(engagementRate.toFixed(2)),   // likes+comments
-        view_rate_pct: Number(viewRatePct.toFixed(2)),                // views/seguidores
-        engagement_rate_pct_combined: engagementCombinedPct,          // 0.6*ER + 0.4*VR
+        engagement_rate_pct_raw: Number(engagementRate.toFixed(2)),
+        view_rate_pct: Number(viewRatePct.toFixed(2)),
+        engagement_rate_pct_combined: engagementCombinedPct,
         median_views_recent: medianViews,
         recent_posts_analyzed: posts.length,
 
@@ -726,3 +847,4 @@ Actor.main(async () => {
 
   await Actor.setValue('SUMMARY.json', results);
 });
+
