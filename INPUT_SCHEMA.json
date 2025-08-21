@@ -17,7 +17,7 @@
     "postsLimit": {
       "title": "Número de posts a analisar",
       "type": "integer",
-       "description": "Número de posts recentes a coletar por perfil (6–100). Use 24 para um retrato confiável.",
+      "description": "Número de posts recentes a coletar por perfil (6–100). Use 24 para um retrato confiável.",
       "minimum": 1,
       "maximum": 100,
       "default": 24
@@ -25,6 +25,7 @@
     "concurrency": {
       "title": "Concorrência",
       "type": "integer",
+      "description": "Número de posts recentes a coletar por perfil (6–100). Use 24 para um retrato confiável.",
       "minimum": 1,
       "maximum": 10,
       "default": 1
@@ -32,6 +33,7 @@
     "useLoginCookies": {
       "title": "Usar cookies de login?",
       "type": "boolean",
+      "description": "Número de posts recentes a coletar por perfil (6–100). Use 24 para um retrato confiável.",
       "default": false
     },
     "cookies": {
