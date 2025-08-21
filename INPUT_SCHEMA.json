@@ -1,7 +1,7 @@
 {
   "title": "Instagram Influencer Analyzer",
-  "schemaVersion": 1,
   "type": "object",
+  "schemaVersion": 1,
   "properties": {
     "targets": {
       "title": "Usernames ou links do Instagram",
@@ -17,6 +17,7 @@
     "postsLimit": {
       "title": "Número de posts a analisar",
       "type": "integer",
+       "description": "Número de posts recentes a coletar por perfil (6–100). Use 24 para um retrato confiável.",
       "minimum": 1,
       "maximum": 100,
       "default": 24
