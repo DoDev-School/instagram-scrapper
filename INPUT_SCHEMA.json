@@ -1,45 +1,43 @@
 {
-  "title": "Instagram Profile Tracker",
+  "title": "Instagram Influencer Analyzer",
   "type": "object",
-  "schemaVersion": 1,
   "properties": {
-    "usernames": {
-      "title": "Usernames",
+    "targets": {
+      "title": "Usernames ou links do Instagram",
       "type": "array",
-      "description": "Lista de usernames do Instagram (sem @). Adicione um por linha.",
-      "items": { "type": "string" },
+      "description": "Cole aqui @username, link de perfil ou link de post (p/reel/tv) do Instagram. Pode misturar todos no mesmo campo.",
       "editor": "stringList",
-      "prefill": ["exemplo_user1", "exemplo_user2"]
+      "prefill": [
+        "@neymarjr",
+        "https://www.instagram.com/reel/DNWX8xvPGMe/",
+        "https://www.instagram.com/p/C2vXMxXrlkI/"
+      ]
     },
     "postsLimit": {
-      "title": "Quantidade de posts para analisar",
+      "title": "Número de posts a analisar",
       "type": "integer",
-      "description": "Número de posts recentes a coletar por perfil (6–100). Use 24 para um retrato confiável.",
-      "prefill": 24,
-      "minimum": 6,
+      "minimum": 1,
       "maximum": 100,
-      "editor": "number"
+      "default": 24
+    },
+    "concurrency": {
+      "title": "Concorrência",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "default": 1
     },
     "useLoginCookies": {
-      "title": "Usar cookies de login",
+      "title": "Usar cookies de login?",
       "type": "boolean",
-      "description": "Ative se quiser raspar usando uma sessão logada (pode reduzir rate-limit e mostrar dados extras).",
-      "prefill": false,
-      "editor": "checkbox"
+      "default": false
     },
     "cookies": {
-      "title": "Cookies (JSON)",
+      "title": "Cookies (JSON opcional)",
       "type": "string",
-      "description": "Cole um array JSON de cookies da sua sessão do Instagram. Ex.: [{\"name\":\"sessionid\",\"value\":\"...\",\"domain\":\".instagram.com\"}]",
-      "editor": "textarea"
-    },
-    "proxy": {
-      "title": "Configuração de Proxy",
-      "type": "object",
-      "description": "Use o Apify Proxy ou configure um proxy próprio.",
-      "editor": "proxy"
+      "editor": "textarea",
+      "description": "Cole aqui os cookies exportados do Instagram em formato JSON, caso precise acessar posts privados ou restritos."
     }
   },
-  "required": ["usernames"]
+  "required": ["targets"]
 }
-
